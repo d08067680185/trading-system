@@ -1,0 +1,19 @@
+# CEX connectors + API
+aiohttp>=3.9
+websockets>=12.0
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic>=2.0
+aiofiles>=23.0
+certifi>=2024.0
+
+# Phase 2: On-chain / DEX
+web3>=6.0
+
+# Phase 3: Data storage + backtesting
+aiosqlite>=0.20
+pandas>=2.0
+numpy>=1.26
+scipy>=1.11

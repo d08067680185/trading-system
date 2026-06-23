@@ -1,0 +1,26 @@
+[Unit]
+Description=AutoTrader Trading System
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/trading-system
+ExecStart=/root/trading-system/venv/bin/python main.py
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# 日志：同时写 systemd journal 和 logs/ 目录（main.py 里 RotatingFileHandler 负责写文件）
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-system
+Environment=PYTHONUNBUFFERED=1
+
+# 从 .env 文件加载密钥（服务器上将密钥写入 /root/trading-system/.env）
+EnvironmentFile=/root/trading-system/.env
+
+[Install]
+WantedBy=multi-user.target

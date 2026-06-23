@@ -1,0 +1,30 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.pytest_cache/
+venv/
+.venv/
+*.egg-info/
+
+# ── Data & Logs ───────────────────────────────────────────────────────────────
+data/*.db
+data/*.db.bak
+logs/
+*.log
+
+# ── Frontend (node_modules; dist IS committed for server deployment) ──────────
+frontend/node_modules/
+frontend/.env.local
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V*
+.Trashes
+.fuse_hidden*

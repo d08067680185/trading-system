@@ -1,0 +1,99 @@
+api:
+  key: ''
+backtest:
+  default_initial_capital: 100
+  default_interval: 1h
+  taker_fee_bps: 4
+  # Parity engine: run backtests through the real TradingEngine + RiskManager +
+  # SimulatedConnector (models layered grid inventory and runs real risk gates).
+  # Validated identical to legacy on single-position strategies; reports more
+  # trades/fees on grid (legacy understated them). Set false to use legacy.
+  parity: true
+chains:
+  arbitrum:
+    chain_id: 42161
+    enabled: false
+    gas_base_multiplier: 1.05
+    gas_priority_multiplier: 1.1
+    private_key: ''
+    rpc_url: ''
+  ethereum:
+    chain_id: 1
+    enabled: false
+    gas_base_multiplier: 1.1
+    gas_priority_multiplier: 1.2
+    private_key: ''
+    rpc_url: ''
+data:
+  db_path: data/trading_data.db
+  equity_snapshot_interval: 60
+  tick_sample_rate: 10
+dex:
+  enabled: false
+  max_slippage_bps: 50
+  min_profit_bps: 10
+engine:
+  log_level: INFO
+  orderbook_depth: 20
+  auto_heal_feeds: true   # auto-reconnect a connector whose market-data feed silently freezes
+  symbols:
+  - BTC-USDT
+  - ETH-USDT
+exchanges:
+  binance:
+    api_key: ''       # set via BINANCE_API_KEY env var
+    market_type: futures
+    secret: ''        # set via BINANCE_SECRET env var
+    testnet: false
+  binance_spot:
+    api_key: ''       # set via BINANCE_SPOT_API_KEY env var
+    market_type: spot
+    secret: ''        # set via BINANCE_SPOT_SECRET env var
+    testnet: false
+  okx:
+    api_key: ''       # set via OKX_API_KEY env var
+    market_type: swap
+    passphrase: ''    # set via OKX_PASSPHRASE env var
+    secret: ''        # set via OKX_SECRET env var
+    testnet: false
+  okx_spot:
+    api_key: ''       # set via OKX_SPOT_API_KEY env var
+    market_type: spot
+    passphrase: ''    # set via OKX_SPOT_PASSPHRASE env var
+    secret: ''        # set via OKX_SPOT_SECRET env var
+    testnet: false
+risk:
+  enabled: true
+  max_daily_loss_usdt: 10
+  max_open_orders: 5
+  max_order_usdt: 30
+  max_position_usdt: 80
+  max_drawdown_pct: 20        # halt if equity drops 20% from peak (0 = disabled)
+  max_symbol_concentration_pct: 0  # 0 = disabled
+  max_rolling_7d_loss_usdt: 30     # halt if 7-day loss exceeds 30 USDT (0 = disabled)
+  max_rolling_30d_loss_usdt: 60    # halt if 30-day loss exceeds 60 USDT (0 = disabled)
+quant:
+  position_sizer:
+    target_vol_pct: 0.01      # 1% of capital per 1-sigma daily move
+    lookback: 20
+    min_size_usdt: 21.0       # > Binance futures min_notional (20) w/ margin
+    max_size_usdt: 500.0
+  portfolio_risk:
+    lookback_days: 60
+    max_strategy_correlation: 0.80
+  regime:
+    short_window: 20
+    long_window: 200
+  margin_monitor:
+    warn_safety_pct: 15.0     # warn when <15% from liquidation
+    critical_safety_pct: 8.0  # auto-reduce when <8%
+    interval_s: 30
+  factor_exposure:
+    max_net_exposure_pct: 50.0
+    interval_s: 60
+  reconciler:
+    interval_s: 300
+telegram:
+  chat_id: ''
+  loss_warn_pct: 80
+  token: ''
