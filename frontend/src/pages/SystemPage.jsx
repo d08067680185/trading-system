@@ -12,6 +12,147 @@ async function apiFetch(path, opts = {}) {
   return res.json()
 }
 
+/* ── Telegram bot settings ───────────────────────────────────────────────── */
+function TelegramSection() {
+  const [cfg, setCfg]       = useState(null)
+  const [token, setToken]   = useState('')
+  const [chatId, setChatId] = useState('')
+  const [msg, setMsg]       = useState(null)   // { ok, text }
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+
+  const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
+
+  const load = useCallback(async () => {
+    try { setCfg(await apiFetch('/notifications/config')) } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const save = async () => {
+    if (!token && !chatId) return
+    setSaving(true)
+    try {
+      const res = await apiFetch('/notifications/config', {
+        method: 'POST',
+        body: JSON.stringify({ token: token || undefined, chat_id: chatId || undefined }),
+      })
+      setToken(''); setChatId('')
+      await load()
+      flash(true, res.enabled ? '已保存，Telegram 已启用' : '已保存（未完整配置）')
+    } catch (e) {
+      flash(false, '保存失败：' + e.message)
+    } finally { setSaving(false) }
+  }
+
+  const test = async () => {
+    setTesting(true)
+    try {
+      await apiFetch('/notifications/test', { method: 'POST' })
+      flash(true, '✅ 测试消息已发送，请检查 Telegram')
+    } catch (e) {
+      flash(false, '❌ 发送失败：' + e.message)
+    } finally { setTesting(false) }
+  }
+
+  const clear = async () => {
+    try {
+      await apiFetch('/notifications/config', { method: 'DELETE' })
+      await load()
+      flash(true, '已清除 Telegram 配置')
+    } catch { flash(false, '清除失败') }
+  }
+
+  const enabled = cfg?.live_enabled
+
+  return (
+    <Card style={{ padding: '20px 22px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="label">Telegram 告警机器人</span>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+            background: enabled ? 'rgba(0,217,163,0.12)' : 'rgba(255,255,255,0.05)',
+            color: enabled ? 'var(--green)' : 'var(--t3)',
+            border: `1px solid ${enabled ? 'rgba(0,217,163,0.25)' : 'var(--border)'}`,
+          }}>
+            {enabled ? '● 已启用' : '○ 未启用'}
+          </span>
+        </div>
+        {enabled && (
+          <Button variant="ghost" size="sm" onClick={test} disabled={testing}>
+            {testing ? '发送中…' : '📨 发送测试'}
+          </Button>
+        )}
+      </div>
+
+      {cfg && enabled && (
+        <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 12, color: 'var(--t3)' }}>
+            Chat ID：<span style={{ color: 'var(--t1)', fontWeight: 600 }}>{cfg.chat_id}</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--t3)' }}>
+            Token：<span style={{ color: 'var(--t2)' }}>…{cfg.token_suffix}</span>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 5 }}>Bot Token</div>
+          <input
+            type="password"
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            placeholder={cfg?.token_set ? `当前已设置（…${cfg.token_suffix}）` : '从 @BotFather 获取'}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8,
+              color: 'var(--t1)', fontSize: 12, padding: '8px 12px', outline: 'none',
+            }}
+          />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 5 }}>Chat ID</div>
+          <input
+            type="text"
+            value={chatId}
+            onChange={e => setChatId(e.target.value)}
+            placeholder={cfg?.chat_id || '从 @userinfobot 获取'}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8,
+              color: 'var(--t1)', fontSize: 12, padding: '8px 12px', outline: 'none',
+            }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Button variant="primary" size="sm" onClick={save} disabled={saving || (!token && !chatId)}>
+          {saving ? '保存中…' : '保存配置'}
+        </Button>
+        {enabled && (
+          <Button variant="ghost" size="sm" onClick={clear} style={{ color: 'var(--red)' }}>
+            清除
+          </Button>
+        )}
+        {msg && (
+          <span style={{ fontSize: 12, color: msg.ok ? 'var(--green)' : 'var(--red)' }}>
+            {msg.text}
+          </span>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: 'var(--surface)', fontSize: 11, color: 'var(--t3)', lineHeight: 1.8 }}>
+        获取方式：①&nbsp;在 Telegram 搜索 <b style={{color:'var(--t2)'}}>@BotFather</b> → /newbot → 复制 Token<br/>
+        ②&nbsp;搜索 <b style={{color:'var(--t2)'}}>@userinfobot</b> → /start → 复制 Chat ID（你的用户 ID）<br/>
+        告警触发：暂停/恢复、成交、策略错误、损失预警、健康状态变化
+      </div>
+    </Card>
+  )
+}
+
 /* ── Alert rules section ─────────────────────────────────────────────────── */
 function AlertRulesSection({ t }) {
   const [rules, setRules] = useState([])
@@ -474,6 +615,9 @@ export default function SystemPage({ wsConnected }) {
           </div>
         )}
       </Card>
+
+      {/* Telegram bot */}
+      <TelegramSection />
 
       {/* Alert rules */}
       <AlertRulesSection t={t} />

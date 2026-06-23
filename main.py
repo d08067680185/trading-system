@@ -345,6 +345,12 @@ async def main() -> None:
     storage = DataStorage(config.data.db_path)
     await storage.connect()
 
+    # DB-stored Telegram settings override config/env (set via System → Telegram UI)
+    tg_token   = await storage.get_setting("telegram_token")   or config.telegram.token
+    tg_chat_id = await storage.get_setting("telegram_chat_id") or config.telegram.chat_id
+    if tg_token and tg_chat_id:
+        engine.set_notifier(TelegramAlerter(token=tg_token, chat_id=tg_chat_id))
+
     fetcher    = HistoricalFetcher(storage)
     bt_engine  = BacktestEngine(storage, parity=config.backtest.parity)
     optimizer  = ParameterOptimizer(bt_engine)

@@ -152,6 +152,11 @@ CREATE TABLE IF NOT EXISTS auto_actions (
     detail    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_auto_actions_ts ON auto_actions(ts DESC);
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -791,3 +796,20 @@ class DataStorage:
         d["params"] = json.loads(d["params"]) if d["params"] else {}
         d["result"] = json.loads(d["result"]) if d["result"] else None
         return d
+
+    async def get_setting(self, key: str) -> str | None:
+        async with self._db.execute("SELECT value FROM settings WHERE key=?", (key,)) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self._db.execute(
+            "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, value, time.time()),
+        )
+        await self._db.commit()
+
+    async def delete_setting(self, key: str) -> None:
+        await self._db.execute("DELETE FROM settings WHERE key=?", (key,))
+        await self._db.commit()

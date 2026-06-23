@@ -1647,6 +1647,55 @@ async def reset_equity_baseline():
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 
+@router.get("/notifications/config")
+async def get_notifications_config():
+    storage = get_storage()
+    token   = await storage.get_setting("telegram_token") or ""
+    chat_id = await storage.get_setting("telegram_chat_id") or ""
+    eng = get_engine()
+    notifier = getattr(eng, "_notifier", None)
+    return {
+        "enabled":      bool(token and chat_id),
+        "chat_id":      chat_id,
+        "token_set":    bool(token),
+        "token_suffix": token[-8:] if len(token) > 8 else ("*" * len(token)),
+        "live_enabled": notifier is not None and notifier.enabled,
+    }
+
+
+@router.post("/notifications/config")
+async def save_notifications_config(body: dict):
+    from notifications.telegram import TelegramAlerter
+    token   = (body.get("token")   or "").strip()
+    chat_id = (body.get("chat_id") or "").strip()
+    storage = get_storage()
+    if token:
+        await storage.set_setting("telegram_token", token)
+    if chat_id:
+        await storage.set_setting("telegram_chat_id", chat_id)
+    # read back full values in case one field was omitted
+    if not token:
+        token = await storage.get_setting("telegram_token") or ""
+    if not chat_id:
+        chat_id = await storage.get_setting("telegram_chat_id") or ""
+    # hot-swap alerter on the live engine
+    eng = get_engine()
+    new_alerter = TelegramAlerter(token=token, chat_id=chat_id)
+    eng.set_notifier(new_alerter)
+    return {"saved": True, "enabled": new_alerter.enabled}
+
+
+@router.delete("/notifications/config")
+async def clear_notifications_config():
+    from notifications.telegram import TelegramAlerter
+    storage = get_storage()
+    await storage.delete_setting("telegram_token")
+    await storage.delete_setting("telegram_chat_id")
+    eng = get_engine()
+    eng.set_notifier(TelegramAlerter())   # disabled (no token/chat_id)
+    return {"cleared": True}
+
+
 @router.post("/notifications/test")
 async def test_notifications():
     """Send a test Telegram message to verify configuration."""
