@@ -34,7 +34,7 @@ export function Badge({ variant, className, children, ...props }) {
 export function StatTile({ label, value, sub, color, accent, className, style }) {
   return (
     <div className={cx('card', accent && `accent-${accent}`, className)}
-         style={{ padding: '14px 16px', ...style }}>
+         style={{ padding: '14px 16px 18px', ...style }}>
       <div className="label" style={{ marginBottom: 6 }}>{label}</div>
       <div className="metric" style={color ? { color } : undefined}>{value}</div>
       {sub != null && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>{sub}</div>}

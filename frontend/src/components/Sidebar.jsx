@@ -140,7 +140,7 @@ export default function Sidebar({ page, onNavigate, onSettings, risk, open, onCl
       </nav>
 
       {/* Bottom: risk + settings */}
-      <div style={{ padding: '10px 10px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+      <div style={{ padding: '10px 10px calc(10px + env(safe-area-inset-bottom, 0px))', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
         {risk && (
           <div style={{
             padding: '10px 14px', borderRadius: 10, marginBottom: 8,
