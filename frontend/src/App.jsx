@@ -19,6 +19,7 @@ const TradesPage     = lazy(() => import('./pages/TradesPage'))
 const DexPage        = lazy(() => import('./pages/DexPage'))
 const RiskPage       = lazy(() => import('./pages/RiskPage'))
 const LogsPage       = lazy(() => import('./pages/LogsPage'))
+const FuturesPage    = lazy(() => import('./pages/FuturesPage'))
 
 const API = '/api'
 function getApiKey() { return localStorage.getItem('trading_api_key') || '' }
@@ -270,6 +271,7 @@ function AppContent() {
               {page === 'positions'  && <PositionsPage  positions={positionsList} tickers={tickers} />}
               {page === 'orders'     && <OrdersPage     orders={ordersList} symbols={symbols} />}
               {page === 'strategies' && <StrategiesPage strategies={strategies} />}
+              {page === 'futures'    && <FuturesPage strategies={strategies} positions={positions} tickers={tickers} onUpdate={loadAll} />}
               {page === 'backtest'   && <BacktestPage />}
               {page === 'trades'     && <TradesPage />}
               {page === 'stats'      && <StatsPage />}

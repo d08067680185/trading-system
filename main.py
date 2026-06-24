@@ -18,6 +18,9 @@ from strategies.cash_carry import CashCarryStrategy
 from strategies.grid import SpotGridStrategy
 from strategies.market_maker import MarketMakerStrategy
 from strategies.trading_comp import TradingCompStrategy
+from strategies.futures_trend import FuturesTrendStrategy
+from strategies.futures_grid import FuturesGridStrategy
+from strategies.futures_signal import FuturesSignalStrategy
 
 
 def validate_config(config) -> list[str]:
@@ -215,6 +218,35 @@ async def main() -> None:
     engine.add_strategy(market_maker)
     engine.add_strategy(trading_comp)
 
+    # ── Futures auto-trading strategies ──────────────────────────────────────
+    futures_trend = FuturesTrendStrategy("futures_trend", {
+        "exchange": "binance", "symbol": "BTC-USDT",
+        "fast_period": 10, "slow_period": 30,
+        "position_usdt": 10.0, "stop_loss_pct": 2.0, "take_profit_pct": 4.0,
+        "direction": "both", "cooldown_s": 60.0,
+    })
+    futures_trend.disable()
+
+    futures_grid = FuturesGridStrategy("futures_grid", {
+        "exchange": "binance", "symbol": "BTC-USDT",
+        "grid_low": 0.0, "grid_high": 0.0, "grid_count": 10,
+        "grid_usdt": 10.0, "mode": "neutral",
+    })
+    futures_grid.disable()
+
+    futures_signal = FuturesSignalStrategy("futures_signal", {
+        "exchange": "binance", "symbol": "BTC-USDT",
+        "position_usdt": 10.0, "signal_type": "rsi",
+        "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
+        "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "direction": "both",
+        "cooldown_s": 120.0,
+    })
+    futures_signal.disable()
+
+    engine.add_strategy(futures_trend)
+    engine.add_strategy(futures_grid)
+    engine.add_strategy(futures_signal)
+
     # Register with API so backtest can resolve strategies by ID
     register_strategy("arb_spread", SpreadArbStrategy)
     register_strategy("funding_arb", FundingRateArbStrategy)
@@ -222,6 +254,9 @@ async def main() -> None:
     register_strategy("spot_grid_btc", SpotGridStrategy)
     register_strategy("market_maker", MarketMakerStrategy)
     register_strategy("trading_comp", TradingCompStrategy)
+    register_strategy("futures_trend", FuturesTrendStrategy)
+    register_strategy("futures_grid", FuturesGridStrategy)
+    register_strategy("futures_signal", FuturesSignalStrategy)
 
     set_engine(engine)
 
