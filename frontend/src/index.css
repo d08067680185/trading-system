@@ -310,12 +310,17 @@ tbody tr:hover td { background: rgba(59,123,255,0.04); }
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .page {
   padding: 24px 28px;
-  height: 100%;
-  overflow-y: auto;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
+/* Direct card children of .page must never shrink — prevents flex-shrink
+   from compressing them to zero when many sections stack on a tall page
+   (e.g. RiskPage). .card has overflow:hidden which makes min-height:0 in
+   flex, so cards without this rule can be squeezed until their metric text
+   is clipped. */
+.page > .card { flex-shrink: 0; }
 .page-title  { font-size: 18px; font-weight: 700; color: var(--t1); }
 .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--t2); }
 
