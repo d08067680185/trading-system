@@ -229,9 +229,31 @@ function AppContent() {
 
   const positionsList = useMemo(() => Object.values(positions), [positions])
   const ordersList    = useMemo(() => Object.values(orders), [orders])
+
+  // Deduplicate balances from connectors sharing the same underlying account.
+  // OKX unified account: both `okx` (swap) and `okx_spot` call the same API →
+  // identical totals per asset → count once. Rule: within each exchange family
+  // (strip _spot suffix), if all connectors report the same total for an asset,
+  // keep only one entry. If totals differ (truly separate wallets like Binance
+  // USDT-M ≠ spot), keep all.
+  const deduplicatedBalances = useMemo(() => {
+    const families = {}
+    balances.forEach(b => {
+      const fam = b.exchange.replace(/_spot$/, '')
+      const key = `${fam}:${b.asset}`
+      if (!families[key]) families[key] = []
+      families[key].push(b)
+    })
+    return Object.values(families).flatMap(group => {
+      if (group.length === 1) return group
+      const totals = group.map(b => Number(b.total).toFixed(8))
+      return totals.every(v => v === totals[0]) ? [group[0]] : group
+    })
+  }, [balances])
+
   const pageProps     = useMemo(
-    () => ({ tickers, positions: positionsList, orders: ordersList, balances, risk, priceHistory, symbols, strategies, equityRefresh, regimes }),
-    [tickers, positionsList, ordersList, balances, risk, priceHistory, symbols, strategies, equityRefresh, regimes]
+    () => ({ tickers, positions: positionsList, orders: ordersList, balances: deduplicatedBalances, risk, priceHistory, symbols, strategies, equityRefresh, regimes }),
+    [tickers, positionsList, ordersList, deduplicatedBalances, risk, priceHistory, symbols, strategies, equityRefresh, regimes]
   )
 
   return (
@@ -257,7 +279,7 @@ function AppContent() {
             page={page}
             status={status}
             wsConnected={wsConnected}
-            balances={balances}
+            balances={deduplicatedBalances}
             risk={risk}
             onHalt={handleHalt}
             onResume={handleResume}
