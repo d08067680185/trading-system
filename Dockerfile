@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/db /app/logs
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app

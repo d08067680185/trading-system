@@ -25,7 +25,7 @@ chains:
     private_key: ''
     rpc_url: ''
 data:
-  db_path: data/trading_data.db
+  db_path: db/trading_data.db
   equity_snapshot_interval: 60
   tick_sample_rate: 10
 dex:
