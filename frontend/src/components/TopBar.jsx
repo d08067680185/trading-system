@@ -42,7 +42,7 @@ export default function TopBar({ page, status, wsConnected, balances, onHalt, on
     logs:       'Logs',
   }
 
-  const totalUsdt = balances.filter(b => b.asset === 'USDT').reduce((s, b) => s + b.total, 0)
+  const totalUsdt = balances.filter(b => b.asset === 'USDT' || b.asset === 'LDUSDT').reduce((s, b) => s + b.total, 0)
   const halted    = risk?.halted
   const exchanges = status?.exchanges || []
 

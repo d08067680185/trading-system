@@ -148,10 +148,11 @@ function RegimeSummary({ symbols, liveRegimes }) {
 export default function DashboardPage({ tickers, positions, orders, balances, risk, priceHistory, symbols, equityRefresh, regimes }) {
   const { t } = useLang()
 
-  // Per-exchange USDT equity (futures + spot combined per exchange family)
+  // Per-exchange USDT equity (futures + spot + flexible savings).
+  // LDUSDT = Binance flexible savings, redeemable 1:1 to USDT — counted as equity.
   const exUsdt = (prefix) =>
     balances
-      .filter(b => b.asset === 'USDT' && b.exchange?.startsWith(prefix))
+      .filter(b => (b.asset === 'USDT' || b.asset === 'LDUSDT') && b.exchange?.startsWith(prefix))
       .reduce((s, b) => s + (b.free + b.locked), 0)
 
   const bnUsdt    = exUsdt('binance')
