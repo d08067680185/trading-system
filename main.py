@@ -94,6 +94,7 @@ async def main() -> None:
             BinanceConnector(
                 api_key=cfg.api_key, secret=cfg.secret,
                 market_type=cfg.market_type, testnet=cfg.testnet,
+                portfolio_margin=os.environ.get("BINANCE_PORTFOLIO_MARGIN", "").lower() == "true",
             ),
         )
 

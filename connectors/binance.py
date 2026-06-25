@@ -25,15 +25,16 @@ from connectors.base import (
 
 
 class BinanceConnector(BaseConnector):
-    """Binance USDT-M Futures connector (supports spot too via market_type=SPOT)."""
+    """Binance USDT-M Futures connector (supports spot and Portfolio Margin via portfolio_margin=True)."""
 
     _REST_FUTURES = "https://fapi.binance.com"
-    _REST_SPOT = "https://api.binance.com"
-    _WS_FUTURES = "wss://fstream.binance.com/ws"
-    _WS_SPOT = "wss://stream.binance.com:9443/ws"
+    _REST_SPOT    = "https://api.binance.com"
+    _REST_PAPI    = "https://papi.binance.com"   # Portfolio Margin API
+    _WS_FUTURES   = "wss://fstream.binance.com/ws"
+    _WS_SPOT      = "wss://stream.binance.com:9443/ws"
 
     _REST_FUTURES_TEST = "https://testnet.binancefuture.com"
-    _WS_FUTURES_TEST = "wss://stream.binancefuture.com/ws"
+    _WS_FUTURES_TEST   = "wss://stream.binancefuture.com/ws"
 
     def __init__(
         self,
@@ -41,8 +42,11 @@ class BinanceConnector(BaseConnector):
         secret: str,
         market_type: MarketType = MarketType.FUTURES,
         testnet: bool = False,
+        portfolio_margin: bool = False,
     ):
         super().__init__(api_key, secret, market_type, testnet)
+        # Portfolio Margin (统一账户/组合保证金) uses papi.binance.com instead of fapi
+        self.portfolio_margin = portfolio_margin and market_type == MarketType.FUTURES
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._listen_key: Optional[str] = None
@@ -381,9 +385,10 @@ class BinanceConnector(BaseConnector):
         body: Optional[dict] = None,
         signed: bool = True,
         weight: int = 1,
+        base_url: Optional[str] = None,
     ) -> dict:
         params = params or {}
-        url = f"{self._rest_base}{path}"
+        url = f"{base_url or self._rest_base}{path}"
         last_err = None
         for attempt in range(3):
             if self._limiter:
@@ -422,12 +427,14 @@ class BinanceConnector(BaseConnector):
         raise RuntimeError(f"Binance request failed after 3 attempts: {last_err}")
 
     async def _get_listen_key(self) -> str:
-        # Futures: POST /fapi/v1/listenKey  |  Spot: POST /api/v3/userDataStream
         if self.market_type == MarketType.FUTURES:
-            path = "/fapi/v1/listenKey"
+            if self.portfolio_margin:
+                data = await self._request("POST", "/papi/v1/listenKey",
+                                           signed=False, base_url=self._REST_PAPI)
+            else:
+                data = await self._request("POST", "/fapi/v1/listenKey", signed=False)
         else:
-            path = "/api/v3/userDataStream"
-        data = await self._request("POST", path, signed=False)
+            data = await self._request("POST", "/api/v3/userDataStream", signed=False)
         return data["listenKey"]
 
     async def _sync_time(self) -> None:
@@ -485,12 +492,18 @@ class BinanceConnector(BaseConnector):
         if reduce_only and self.market_type == MarketType.FUTURES:
             params["reduceOnly"] = "true"
 
-        prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
+        if self.market_type == MarketType.FUTURES and self.portfolio_margin:
+            papi_base = self._REST_PAPI
+            order_path = "/papi/v1/um/order"
+        elif self.market_type == MarketType.FUTURES:
+            papi_base = None
+            order_path = "/fapi/v1/order"
+        else:
+            papi_base = None
+            order_path = "/api/v3/order"
         try:
-            data = await self._request("POST", f"{prefix}/order", params=params)
+            data = await self._request("POST", order_path, params=params, base_url=papi_base)
         except RuntimeError as e:
-            # Idempotency: a retried POST whose first attempt actually succeeded
-            # hits "duplicate client order id" — fetch and return the live order.
             if "duplicate" in str(e).lower():
                 self.logger.info(f"Duplicate clientOrderId {cid} — fetching existing order")
                 return await self._get_order_by_client_id(symbol, cid)
@@ -499,17 +512,27 @@ class BinanceConnector(BaseConnector):
 
     async def _get_order_by_client_id(self, symbol: str, cid: str) -> Order:
         raw = self.to_exchange_symbol(symbol)
-        prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
-        data = await self._request("GET", f"{prefix}/order",
-                                   params={"symbol": raw, "origClientOrderId": cid})
+        if self.market_type == MarketType.FUTURES and self.portfolio_margin:
+            data = await self._request("GET", "/papi/v1/um/order",
+                                       params={"symbol": raw, "origClientOrderId": cid},
+                                       base_url=self._REST_PAPI)
+        else:
+            prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
+            data = await self._request("GET", f"{prefix}/order",
+                                       params={"symbol": raw, "origClientOrderId": cid})
         return self._parse_order_response(data, symbol)
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         raw = self.to_exchange_symbol(symbol)
-        prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
         try:
-            await self._request("DELETE", f"{prefix}/order",
-                                 params={"symbol": raw, "orderId": order_id})
+            if self.market_type == MarketType.FUTURES and self.portfolio_margin:
+                await self._request("DELETE", "/papi/v1/um/order",
+                                    params={"symbol": raw, "orderId": order_id},
+                                    base_url=self._REST_PAPI)
+            else:
+                prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
+                await self._request("DELETE", f"{prefix}/order",
+                                    params={"symbol": raw, "orderId": order_id})
             return True
         except Exception as e:
             self.logger.error(f"Cancel order failed: {e}")
@@ -517,21 +540,29 @@ class BinanceConnector(BaseConnector):
 
     async def get_order(self, symbol: str, order_id: str) -> Order:
         raw = self.to_exchange_symbol(symbol)
-        prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
-        data = await self._request("GET", f"{prefix}/order",
-                                   params={"symbol": raw, "orderId": order_id})
+        if self.market_type == MarketType.FUTURES and self.portfolio_margin:
+            data = await self._request("GET", "/papi/v1/um/order",
+                                       params={"symbol": raw, "orderId": order_id},
+                                       base_url=self._REST_PAPI)
+        else:
+            prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
+            data = await self._request("GET", f"{prefix}/order",
+                                       params={"symbol": raw, "orderId": order_id})
         return self._parse_order_response(data, symbol)
 
     async def get_open_orders(self, symbol: Optional[str] = None) -> list[Order]:
-        prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
         params = {}
         if symbol:
             params["symbol"] = self.to_exchange_symbol(symbol)
-        data = await self._request("GET", f"{prefix}/openOrders", params=params)
+        if self.market_type == MarketType.FUTURES and self.portfolio_margin:
+            data = await self._request("GET", "/papi/v1/um/openOrders",
+                                       params=params, base_url=self._REST_PAPI)
+        else:
+            prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
+            data = await self._request("GET", f"{prefix}/openOrders", params=params)
         return [self._parse_order_response(o, self.from_exchange_symbol(o["symbol"])) for o in data]
 
     async def cancel_all_orders(self, symbol: Optional[str] = None) -> int:
-        prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
         if not symbol:
             orders = await self.get_open_orders()
             symbols = {o.symbol for o in orders}
@@ -540,9 +571,13 @@ class BinanceConnector(BaseConnector):
                 count += await self.cancel_all_orders(s)
             return count
         raw = self.to_exchange_symbol(symbol)
-        data = await self._request("DELETE", f"{prefix}/allOpenOrders",
-                                   params={"symbol": raw})
-        # Spot returns a list of cancelled orders; futures returns a status dict
+        if self.market_type == MarketType.FUTURES and self.portfolio_margin:
+            data = await self._request("DELETE", "/papi/v1/um/allOpenOrders",
+                                       params={"symbol": raw}, base_url=self._REST_PAPI)
+        else:
+            prefix = "/fapi/v1" if self.market_type == MarketType.FUTURES else "/api/v3"
+            data = await self._request("DELETE", f"{prefix}/allOpenOrders",
+                                       params={"symbol": raw})
         return len(data) if isinstance(data, list) else 1
 
     # ── Account ──────────────────────────────────────────────────────────────
@@ -550,7 +585,11 @@ class BinanceConnector(BaseConnector):
     async def get_positions(self) -> list[Position]:
         if self.market_type == MarketType.SPOT or not self.api_key:
             return []
-        data = await self._request("GET", "/fapi/v2/positionRisk")
+        if self.portfolio_margin:
+            data = await self._request("GET", "/papi/v1/um/positionRisk",
+                                       base_url=self._REST_PAPI)
+        else:
+            data = await self._request("GET", "/fapi/v2/positionRisk")
         positions = []
         for p in data:
             size = abs(Decimal(p["positionAmt"]))
@@ -575,6 +614,16 @@ class BinanceConnector(BaseConnector):
         if not self.api_key:
             return []
         if self.market_type == MarketType.FUTURES:
+            if self.portfolio_margin:
+                # PAPI balance uses totalWalletBalance instead of balance
+                data = await self._request("GET", "/papi/v1/balance",
+                                           base_url=self._REST_PAPI)
+                return [Balance(
+                    exchange=self.exchange,
+                    asset=b["asset"],
+                    free=Decimal(b["availableBalance"]),
+                    locked=Decimal(b["totalWalletBalance"]) - Decimal(b["availableBalance"]),
+                ) for b in data if Decimal(b.get("totalWalletBalance", "0")) > 0]
             data = await self._request("GET", "/fapi/v2/balance")
             return [Balance(
                 exchange=self.exchange,
@@ -612,8 +661,13 @@ class BinanceConnector(BaseConnector):
         if self.market_type != MarketType.FUTURES:
             return
         raw = self.to_exchange_symbol(symbol)
-        await self._request("POST", "/fapi/v1/leverage",
-                             params={"symbol": raw, "leverage": leverage})
+        if self.portfolio_margin:
+            await self._request("POST", "/papi/v1/um/leverage",
+                                 params={"symbol": raw, "leverage": leverage},
+                                 base_url=self._REST_PAPI)
+        else:
+            await self._request("POST", "/fapi/v1/leverage",
+                                 params={"symbol": raw, "leverage": leverage})
         self.logger.info(f"Set leverage {symbol} → {leverage}x")
 
     # ── Parsers ───────────────────────────────────────────────────────────────
