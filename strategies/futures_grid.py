@@ -264,6 +264,16 @@ class FuturesGridStrategy(BaseStrategy):
                 best, best_idx = diff, i
         return best_idx
 
+    def enable(self) -> None:
+        super().enable()
+        # Always re-initialize on enable so the grid recovers cleanly when
+        # orders were cancelled or positions changed while the strategy was off.
+        self._initialized = False
+        self._grid_prices = []
+        self._open_orders.clear()
+        self._order_map.clear()
+        self._runaway_tripped = False
+
     def on_params_updated(self, changed: dict) -> None:
         if any(k in changed for k in ("grid_low", "grid_high", "grid_count", "grid_usdt", "mode")):
             self._initialized = False

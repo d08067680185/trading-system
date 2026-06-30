@@ -204,6 +204,7 @@ class FuturesTrendStrategy(BaseStrategy):
     def get_status(self) -> dict:
         fast_ma = self._ma(int(self.params["fast_period"]))
         slow_ma = self._ma(int(self.params["slow_period"]))
+        slow_p = int(self.params["slow_period"])
         return {
             **self._pnl_status(),
             "strategy_id": self.strategy_id,
@@ -217,4 +218,5 @@ class FuturesTrendStrategy(BaseStrategy):
             "slow_ma": round(slow_ma, 2) if slow_ma else None,
             "total_trades": self._total_trades,
             "price_samples": len(self._prices),
+            "price_samples_needed": slow_p + 2,
         }

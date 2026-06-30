@@ -468,6 +468,8 @@ const T = {
     futures_signal_type: 'Signal',
     futures_rsi_label: rsi => `RSI: ${rsi}`,
     futures_enable_tip: 'Configure and enable in Strategies page',
+    futures_warmup: 'Warmup',
+    futures_grid_runaway: '⚠ Runaway fill cascade — re-enable to reset',
   },
 
   zh: {
@@ -937,6 +939,8 @@ const T = {
     futures_signal_type: '信号',
     futures_rsi_label: rsi => `RSI: ${rsi}`,
     futures_enable_tip: '在"策略"页配置并启用',
+    futures_warmup: '预热进度',
+    futures_grid_runaway: '⚠ 级联成交保护触发 — 重新启用以重置',
   },
 }
 

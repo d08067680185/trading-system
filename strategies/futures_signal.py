@@ -309,17 +309,25 @@ class FuturesSignalStrategy(BaseStrategy):
             self._prev_slow_ma = None
 
     def get_status(self) -> dict:
+        sig_type = self.params.get("signal_type", "rsi")
+        if sig_type == "rsi":
+            needed = int(self.params["rsi_period"]) + 1
+        elif sig_type == "breakout":
+            needed = int(self.params["breakout_period"]) + 1
+        else:  # ma_cross
+            needed = int(self.params["slow_period"]) + 2
         return {
             **self._pnl_status(),
             "strategy_id": self.strategy_id,
             "enabled": self._enabled,
             "exchange": self.params["exchange"],
             "symbol": self.params["symbol"],
-            "signal_type": self.params.get("signal_type", "rsi"),
+            "signal_type": sig_type,
             "position_side": self._position_side,
             "entry_price": round(self._entry_price, 2) if self._entry_price else None,
             "last_price": round(self._last_price, 2) if self._last_price else None,
             "current_rsi": round(self._last_rsi, 1) if self._last_rsi is not None else None,
             "total_trades": self._total_trades,
             "price_samples": len(self._prices),
+            "price_samples_needed": needed,
         }

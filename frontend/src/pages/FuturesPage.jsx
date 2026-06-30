@@ -63,9 +63,16 @@ function ParamEditor({ stratId, params, meta, onSaved }) {
                 <option value="true">Yes</option>
                 <option value="false">No</option>
               </select>
+            ) : type === 'text' ? (
+              <input
+                type="text"
+                value={local[key] ?? ''}
+                onChange={e => setLocal(p => ({ ...p, [key]: e.target.value }))}
+                style={{ width: '100%' }}
+              />
             ) : (
               <input
-                type={type === 'integer' ? 'number' : 'number'}
+                type="number"
                 step={type === 'integer' ? 1 : 'any'}
                 value={local[key] ?? ''}
                 onChange={e => {
@@ -223,6 +230,8 @@ const SIGNAL_PARAMS = [
   { key: 'rsi_oversold',    label: 'RSI Oversold',      type: 'number' },
   { key: 'rsi_overbought',  label: 'RSI Overbought',    type: 'number' },
   { key: 'breakout_period', label: 'Breakout Period',   type: 'integer' },
+  { key: 'fast_period',     label: 'Fast MA (ma_cross)', type: 'integer' },
+  { key: 'slow_period',     label: 'Slow MA (ma_cross)', type: 'integer' },
   { key: 'stop_loss_pct',   label: 'Stop Loss %',       type: 'number' },
   { key: 'take_profit_pct', label: 'Take Profit %',     type: 'number' },
   { key: 'direction',       label: 'Direction',         type: 'select',  options: ['both', 'long_only', 'short_only'] },
@@ -407,10 +416,25 @@ export default function FuturesPage({ strategies = [], positions = {}, tickers =
                 {ts.position_side ? ts.position_side.toUpperCase() : '—'}
               </div>
             </div>
-            {ts.fast_ma && ts.slow_ma && (
+            {ts.entry_price && (
               <div>
-                <div className="label">MA</div>
-                <div className="num metric">{ts.fast_ma} / {ts.slow_ma}</div>
+                <div className="label">{t('futures_entry')}</div>
+                <div className="num metric">{ts.entry_price.toLocaleString('en', { maximumFractionDigits: 2 })}</div>
+              </div>
+            )}
+            {ts.fast_ma && ts.slow_ma ? (
+              <div>
+                <div className="label">MA ({ts.params?.fast_period}/{ts.params?.slow_period})</div>
+                <div className="num metric" style={{
+                  color: ts.fast_ma > ts.slow_ma ? 'var(--green)' : 'var(--red)',
+                }}>{ts.fast_ma.toFixed(1)} / {ts.slow_ma.toFixed(1)}</div>
+              </div>
+            ) : ts.price_samples != null && (
+              <div>
+                <div className="label">{t('futures_warmup')}</div>
+                <div className="num metric" style={{ color: 'var(--t3)' }}>
+                  {ts.price_samples}/{(ts.params?.slow_period ?? 30) + 2}
+                </div>
               </div>
             )}
           </FuturesStratCard>
@@ -439,9 +463,22 @@ export default function FuturesPage({ strategies = [], positions = {}, tickers =
               <div className="label">Orders</div>
               <div className="num metric">{gs.open_orders ?? 0}</div>
             </div>
+            {gs.total_buy_fills != null && gs.total_buy_fills + (gs.total_sell_fills ?? 0) > 0 && (
+              <div>
+                <div className="label">Fills B/S</div>
+                <div className="num metric" style={{ color: 'var(--t2)' }}>
+                  {gs.total_buy_fills ?? 0} / {gs.total_sell_fills ?? 0}
+                </div>
+              </div>
+            )}
             {(gs.params?.grid_low === 0 || !gs.params?.grid_low) && (
               <div style={{ gridColumn: '1 / -1' }}>
                 <Badge variant="yellow" size="sm">{t('futures_grid_inactive')}</Badge>
+              </div>
+            )}
+            {gs.runaway_tripped && (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <Badge variant="red" size="sm">{t('futures_grid_runaway')}</Badge>
               </div>
             )}
           </FuturesStratCard>
@@ -464,7 +501,7 @@ export default function FuturesPage({ strategies = [], positions = {}, tickers =
             </div>
             <div>
               <div className="label">{t('futures_signal_type')}</div>
-              <div className="metric" style={{ fontWeight: 600, color: 'var(--t1)' }}>{ss.params?.signal_type || 'rsi'}</div>
+              <div className="metric" style={{ fontWeight: 600, color: 'var(--t2)' }}>{(ss.params?.signal_type || 'rsi').toUpperCase()}</div>
             </div>
             <div>
               <div className="label">{t('futures_position_side')}</div>
@@ -475,14 +512,28 @@ export default function FuturesPage({ strategies = [], positions = {}, tickers =
                 {ss.position_side ? ss.position_side.toUpperCase() : '—'}
               </div>
             </div>
-            {ss.current_rsi != null && (
+            {ss.entry_price && (
               <div>
-                <div className="label">RSI</div>
+                <div className="label">{t('futures_entry')}</div>
+                <div className="num metric">{ss.entry_price.toLocaleString('en', { maximumFractionDigits: 2 })}</div>
+              </div>
+            )}
+            {ss.current_rsi != null ? (
+              <div>
+                <div className="label">RSI({ss.params?.rsi_period ?? 14})</div>
                 <div className="num metric" style={{
+                  fontWeight: 700,
                   color: ss.current_rsi < (ss.params?.rsi_oversold ?? 30) ? 'var(--green)' :
                          ss.current_rsi > (ss.params?.rsi_overbought ?? 70) ? 'var(--red)' : 'var(--t1)',
                 }}>
                   {ss.current_rsi.toFixed(1)}
+                </div>
+              </div>
+            ) : ss.price_samples != null && (
+              <div>
+                <div className="label">{t('futures_warmup')}</div>
+                <div className="num metric" style={{ color: 'var(--t3)' }}>
+                  {ss.price_samples}/{ss.price_samples_needed ?? '?'}
                 </div>
               </div>
             )}
