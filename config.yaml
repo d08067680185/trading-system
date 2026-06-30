@@ -68,7 +68,7 @@ risk:
   max_open_orders: 5
   max_order_usdt: 30
   max_position_usdt: 80
-  max_drawdown_pct: 20        # halt if equity drops 20% from peak (0 = disabled)
+  max_drawdown_pct: 0         # disabled: false halts from OKX balance flicker (2026-07-01)
   max_symbol_concentration_pct: 0  # 0 = disabled
   max_rolling_7d_loss_usdt: 30     # halt if 7-day loss exceeds 30 USDT (0 = disabled)
   max_rolling_30d_loss_usdt: 60    # halt if 30-day loss exceeds 60 USDT (0 = disabled)

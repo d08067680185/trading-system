@@ -211,6 +211,8 @@ async def main() -> None:
         "qty_precision": 5,
     })
     trading_comp.disable()  # start disabled
+    funding_arb.disable()   # disabled: scan_all bought unhedged alt positions (2026-07-01)
+    cash_carry.disable()    # disabled: Binance futures has no USDT margin
 
     engine.add_strategy(spread_arb)
     engine.add_strategy(funding_arb)
