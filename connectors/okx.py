@@ -411,6 +411,11 @@ class OKXConnector(BaseConnector):
         }
         if order_type == OrderType.LIMIT and price:
             body["px"] = fmt_decimal(price)
+        # OKX spot market BUY: default tgtCcy is quote_ccy (USDT), so sz would be
+        # interpreted as USDT amount. Set base_ccy so sz is the base coin amount,
+        # consistent with how the rest of the system sizes orders (in coin units).
+        if self.market_type == MarketType.SPOT and order_type == OrderType.MARKET and side == OrderSide.BUY:
+            body["tgtCcy"] = "base_ccy"
         if reduce_only:
             body["reduceOnly"] = "true"
         data = await self._request("POST", "/api/v5/trade/order", body=body)
