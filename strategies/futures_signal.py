@@ -261,6 +261,12 @@ class FuturesSignalStrategy(BaseStrategy):
                     f"[FuturesSignal] Opened {side} @{price:.2f} qty={qty}"
                     f" signal={self.params['signal_type']}{rsi_str}"
                 )
+            else:
+                rsi_str = f" rsi={self._last_rsi:.1f}" if self._last_rsi else ""
+                self.logger.warning(
+                    f"[FuturesSignal] Order blocked/rejected: {side} @{price:.2f} qty={qty}"
+                    f" exchange={self._exchange().value}{rsi_str} (risk gate or min_size?)"
+                )
         except Exception as e:
             self.logger.warning(f"[FuturesSignal] Open {side} failed: {e}")
 

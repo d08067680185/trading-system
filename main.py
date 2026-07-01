@@ -238,14 +238,15 @@ async def main() -> None:
     })
     futures_grid.disable()
 
+    # OKX swap BTC min order = 1 contract = 0.01 BTC ≈ $590 — exceeds entire capital.
+    # Use OKX spot long-only: RSI buys dips, SL/TP manages exits. $10 works on spot.
     futures_signal = FuturesSignalStrategy("futures_signal", {
-        "exchange": "okx", "symbol": "BTC-USDT",
+        "exchange": "okx_spot", "symbol": "BTC-USDT",
         "position_usdt": 10.0, "signal_type": "rsi",
         "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
-        "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "direction": "both",
+        "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "direction": "long_only",
         "cooldown_s": 120.0,
     })
-    # starts disabled; user enables via UI when ready
 
     engine.add_strategy(futures_trend)
     engine.add_strategy(futures_grid)
