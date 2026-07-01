@@ -41,8 +41,8 @@ def _taker_params(**over):
 
 def _run(strategy, bn_price, okx_price):
     streams = {
-        Exchange.BINANCE: _stream("binance", bn_price),
-        Exchange.OKX: _stream("okx", okx_price),
+        Exchange.BINANCE_SPOT: _stream("binance_spot", bn_price),
+        Exchange.OKX_SPOT: _stream("okx_spot", okx_price),
     }
     return asyncio.run(BacktestRunner().run_multi(
         strategy=strategy, streams=streams, symbol=SYMBOL,

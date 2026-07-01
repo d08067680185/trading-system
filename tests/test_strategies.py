@@ -184,9 +184,9 @@ def _arb(engine, **params):
 
 def _feed_arb_open(s):
     """Feed a spread that triggers BUY@OKX / SELL@BINANCE (bn.bid >> okx.ask)."""
-    okx = Ticker(Exchange.OKX, "BTC-USDT", Decimal("100"), Decimal("100.01"),
+    okx = Ticker(Exchange.OKX_SPOT, "BTC-USDT", Decimal("100"), Decimal("100.01"),
                  Decimal("100"), Decimal("0"))
-    bn = Ticker(Exchange.BINANCE, "BTC-USDT", Decimal("100.10"), Decimal("100.11"),
+    bn = Ticker(Exchange.BINANCE_SPOT, "BTC-USDT", Decimal("100.10"), Decimal("100.11"),
                 Decimal("100.10"), Decimal("0"))
 
     async def run():
@@ -214,8 +214,8 @@ def test_double_maker_places_two_passive_postonly_limits():
     assert buy["order_type"] == OrderType.LIMIT and buy["post_only"] is True
     assert sell["order_type"] == OrderType.LIMIT and sell["post_only"] is True
     # Passive side: buy rests on the buy-exchange bid, sell on the sell-exchange ask
-    assert buy["exchange"] == Exchange.OKX and buy["price"] == Decimal("100")        # okx.bid
-    assert sell["exchange"] == Exchange.BINANCE and sell["price"] == Decimal("100.11")  # bn.ask
+    assert buy["exchange"] == Exchange.OKX_SPOT and buy["price"] == Decimal("100")        # okx.bid
+    assert sell["exchange"] == Exchange.BINANCE_SPOT and sell["price"] == Decimal("100.11")  # bn.ask
 
 
 class _FloorConn:
@@ -231,7 +231,7 @@ def test_min_order_floor_clamps_size_up():
     """When the configured order size is below the exchange minimum, the qty is
     clamped up to floor*1.05 so the connector won't reject every leg locally."""
     eng = _FakeEngine()
-    eng.connectors = {Exchange.BINANCE: _FloorConn(60), Exchange.OKX: _FloorConn(60)}
+    eng.connectors = {Exchange.BINANCE_SPOT: _FloorConn(60), Exchange.OKX_SPOT: _FloorConn(60)}
     s = _arb(eng, order_size_usdt=25.0)   # below the 60-USDT floor
     _feed_arb_open(s)
     buy = next(p for p in eng.placed if p["side"] == OrderSide.BUY)

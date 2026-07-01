@@ -134,8 +134,8 @@ class SpreadArbStrategy(BaseStrategy):
         t = event.ticker
         self._tickers[(t.exchange, t.symbol)] = t
 
-        bn  = self._tickers.get((Exchange.BINANCE, t.symbol))
-        okx = self._tickers.get((Exchange.OKX,     t.symbol))
+        bn  = self._tickers.get((Exchange.BINANCE_SPOT, t.symbol))
+        okx = self._tickers.get((Exchange.OKX_SPOT,     t.symbol))
         if bn is None or okx is None:
             return []
 
@@ -211,8 +211,8 @@ class SpreadArbStrategy(BaseStrategy):
         # trade a viable size or (if that exceeds risk limits) get rejected by
         # RiskManager — not silently fail at the connector every time.
         if self.engine:
-            bn_conn  = self.engine.connectors.get(Exchange.BINANCE)
-            okx_conn = self.engine.connectors.get(Exchange.OKX)
+            bn_conn  = self.engine.connectors.get(Exchange.BINANCE_SPOT)
+            okx_conn = self.engine.connectors.get(Exchange.OKX_SPOT)
             floor_usdt = Decimal("0")
             if bn_conn:
                 floor_usdt = max(floor_usdt, bn_conn.min_order_usdt(symbol, bn.ask))
@@ -226,10 +226,10 @@ class SpreadArbStrategy(BaseStrategy):
         min_depth  = float(size_usdt) * depth_mult
         if self.engine and self.engine.microstructure:
             ms = self.engine.microstructure
-            bn_bid_d  = ms.bid_depth_usdt(Exchange.BINANCE.value, symbol)
-            bn_ask_d  = ms.ask_depth_usdt(Exchange.BINANCE.value, symbol)
-            okx_bid_d = ms.bid_depth_usdt(Exchange.OKX.value, symbol)
-            okx_ask_d = ms.ask_depth_usdt(Exchange.OKX.value, symbol)
+            bn_bid_d  = ms.bid_depth_usdt(Exchange.BINANCE_SPOT.value, symbol)
+            bn_ask_d  = ms.ask_depth_usdt(Exchange.BINANCE_SPOT.value, symbol)
+            okx_bid_d = ms.bid_depth_usdt(Exchange.OKX_SPOT.value, symbol)
+            okx_ask_d = ms.ask_depth_usdt(Exchange.OKX_SPOT.value, symbol)
             if min(bn_bid_d, bn_ask_d, okx_bid_d, okx_ask_d) < min_depth:
                 self._spread_confirm[symbol] = 0  # reset on thin book
                 return
@@ -258,8 +258,8 @@ class SpreadArbStrategy(BaseStrategy):
             if qty > 0:
                 await self._execute_arb(
                     symbol,
-                    buy_ex=Exchange.OKX,   buy_price=okx.ask, buy_qty=qty,
-                    sell_ex=Exchange.BINANCE, sell_price=bn.bid,  sell_qty=qty,
+                    buy_ex=Exchange.OKX_SPOT,   buy_price=okx.ask, buy_qty=qty,
+                    sell_ex=Exchange.BINANCE_SPOT, sell_price=bn.bid,  sell_qty=qty,
                     spread_bps=spread_bn_over_okx,
                     threshold_bps=threshold,
                 )
@@ -270,8 +270,8 @@ class SpreadArbStrategy(BaseStrategy):
             if qty > 0:
                 await self._execute_arb(
                     symbol,
-                    buy_ex=Exchange.BINANCE, buy_price=bn.ask,  buy_qty=qty,
-                    sell_ex=Exchange.OKX,    sell_price=okx.bid, sell_qty=qty,
+                    buy_ex=Exchange.BINANCE_SPOT, buy_price=bn.ask,  buy_qty=qty,
+                    sell_ex=Exchange.OKX_SPOT,    sell_price=okx.bid, sell_qty=qty,
                     spread_bps=spread_okx_over_bn,
                     threshold_bps=threshold,
                 )

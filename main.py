@@ -135,13 +135,14 @@ async def main() -> None:
     from strategies.funding_rate import FundingRateArbStrategy
     from api.main import register_strategy
 
-    # ── 100 USDT capital sizing ───────────────────────────────────────────────
-    # SpreadArb: 25U per order, max 50U deployed (2 legs × 25U)
+    # ── Capital sizing (OKX ~27U available) ──────────────────────────────────
+    # SpreadArb: spot-to-spot (binance_spot vs okx_spot) so $10 order clears
+    # min contract sizes; threshold lowered to 3bps to catch real opportunities
     spread_arb = SpreadArbStrategy("arb_spread", {
-        "min_profit_bps": 5.0,
-        "order_size_usdt": 25.0,
+        "min_profit_bps": 3.0,
+        "order_size_usdt": 10.0,
         "cooldown_s": 30.0,
-        "max_position_usdt": 50.0,
+        "max_position_usdt": 20.0,
     })
     # FundingRateArb: 25U per side (long + short = 50U total)
     funding_arb = FundingRateArbStrategy("funding_arb", {
@@ -238,13 +239,13 @@ async def main() -> None:
     futures_grid.disable()
 
     futures_signal = FuturesSignalStrategy("futures_signal", {
-        "exchange": "binance", "symbol": "BTC-USDT",
+        "exchange": "okx", "symbol": "BTC-USDT",
         "position_usdt": 10.0, "signal_type": "rsi",
         "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
         "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "direction": "both",
         "cooldown_s": 120.0,
     })
-    futures_signal.disable()
+    # starts disabled; user enables via UI when ready
 
     engine.add_strategy(futures_trend)
     engine.add_strategy(futures_grid)
