@@ -584,9 +584,10 @@ class TradingEngine:
                     pass
 
         if not self.risk_manager.check_signal(signal):
+            detail = getattr(self.risk_manager, "last_block_reason", "") or "unknown"
             reason = (
-                f"Order blocked by risk manager: {signal.side.value} {signal.quantity} "
-                f"{signal.exchange.value}:{signal.symbol}"
+                f"Order blocked by risk: {detail} "
+                f"[{signal.side.value} {signal.exchange.value}:{signal.symbol}]"
             )
             self.logger.warning(reason)
             await _db_warn(reason)
@@ -594,7 +595,9 @@ class TradingEngine:
 
         connector = self.connectors.get(signal.exchange)
         if not connector:
-            self.logger.error(f"No connector for exchange: {signal.exchange}")
+            reason = f"Order blocked: no connector for {signal.exchange.value}"
+            self.logger.error(reason)
+            await _db_warn(reason)
             return None
 
         # Staleness guard: never open/increase on a frozen quote (e.g. WS stalled).

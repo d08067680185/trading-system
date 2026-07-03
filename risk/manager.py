@@ -85,68 +85,77 @@ class RiskManager:
         self.logger = logging.getLogger("RiskManager")
         self._halted = False
         self._halt_reason: str = ""
+        self.last_block_reason: str = ""  # set on every rejection; cleared on pass
 
     # ── Pre-trade check ───────────────────────────────────────────────────────
 
+    def _block(self, reason: str) -> bool:
+        """Log + store a rejection reason and return False."""
+        self.last_block_reason = reason
+        self.logger.warning(reason)
+        return False
+
     def check_signal(self, signal: Signal) -> bool:
+        self.last_block_reason = ""
         if not self.config.enabled:
             return True
         if self._halted:
-            self.logger.warning("Risk halt active — blocking signal")
-            return False
+            return self._block(f"Risk halt active: {self._halt_reason}")
 
         self.state.reset_if_new_day()
 
         if self.state.daily_pnl <= -self.config.max_daily_loss_usdt:
-            self.logger.error(
-                f"Daily loss limit hit ({self.state.daily_pnl} USDT) — halting"
-            )
-            self.halt(
+            reason = (
                 f"Daily loss limit hit: {float(self.state.daily_pnl):.2f} USDT "
-                f"(limit: {float(self.config.max_daily_loss_usdt):.2f})"
+                f"(limit: -{float(self.config.max_daily_loss_usdt):.2f})"
             )
-            return False
+            self.logger.error(reason)
+            self.halt(reason)
+            return self._block(reason)
 
         # Rolling window checks
         if self.config.max_rolling_7d_loss_usdt > 0:
             rolling7 = self.state.rolling_pnl(7)
             if rolling7 <= -self.config.max_rolling_7d_loss_usdt:
-                self.halt(
+                reason = (
                     f"7-day rolling loss limit hit: {float(rolling7):.2f} USDT "
                     f"(limit: -{float(self.config.max_rolling_7d_loss_usdt):.2f})"
                 )
-                return False
+                self.halt(reason)
+                return self._block(reason)
 
         if self.config.max_rolling_30d_loss_usdt > 0:
             rolling30 = self.state.rolling_pnl(30)
             if rolling30 <= -self.config.max_rolling_30d_loss_usdt:
-                self.halt(
+                reason = (
                     f"30-day rolling loss limit hit: {float(rolling30):.2f} USDT "
                     f"(limit: -{float(self.config.max_rolling_30d_loss_usdt):.2f})"
                 )
-                return False
+                self.halt(reason)
+                return self._block(reason)
 
         if self.state.open_order_count >= self.config.max_open_orders:
-            self.logger.warning(f"Max open orders ({self.config.max_open_orders}) reached")
-            return False
+            return self._block(
+                f"Max open orders ({self.config.max_open_orders}) reached "
+                f"(currently {self.state.open_order_count})"
+            )
 
         notional = self._estimate_notional(signal)
         if notional > self.config.max_order_usdt:
-            self.logger.warning(
-                f"Order notional {notional:.2f} > limit {self.config.max_order_usdt}"
+            return self._block(
+                f"Order notional {float(notional):.2f} > limit {float(self.config.max_order_usdt):.2f}"
             )
-            return False
 
         # Fix 5: look up position by (exchange, symbol) to avoid cross-exchange collision
         current_pos = self.state.position_notionals.get(
             (signal.exchange.value, signal.symbol), Decimal("0")
         )
         if not signal.reduce_only and current_pos + notional > self.config.max_position_usdt:
-            self.logger.warning(
+            return self._block(
                 f"Position limit [{signal.exchange.value}:{signal.symbol}]: "
-                f"{current_pos:.2f} + {notional:.2f} > {self.config.max_position_usdt}"
+                f"{float(current_pos):.2f} + {float(notional):.2f} "
+                f"> {float(self.config.max_position_usdt):.2f}"
             )
-            return False
 
         # Concentration limit: prevent one symbol from dominating total notional
         if self.config.max_symbol_concentration_pct > 0 and not signal.reduce_only and notional > 0:
@@ -158,11 +167,10 @@ class RiskManager:
             new_sym = sym_notional + notional
             conc_pct = new_sym / new_total * 100 if new_total > 0 else Decimal("0")
             if conc_pct > self.config.max_symbol_concentration_pct:
-                self.logger.warning(
+                return self._block(
                     f"Concentration limit: {signal.symbol} would be {float(conc_pct):.0f}% "
                     f"of total notional (max {float(self.config.max_symbol_concentration_pct):.0f}%)"
                 )
-                return False
 
         return True
 
