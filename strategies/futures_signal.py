@@ -188,13 +188,15 @@ class FuturesSignalStrategy(BaseStrategy):
         if len(closes) < 2:
             return
 
-        # Seed _prices with historical closes (oldest first, drop partial current bar)
+        # Replay historical closes through RSI logic so _avg_gain/_avg_loss are
+        # fully initialised — same effect as if the strategy had been running live.
         self._prices.clear()
         self._avg_gain = None
         self._avg_loss = None
         self._last_rsi = None
         for c in closes:
             self._prices.append(c)
+            self._compute_rsi()  # no-op until period+1 closes; then seeds + Wilder
 
         # Advance bar timestamp so bar aggregation doesn't re-count current bar
         import time as _time
