@@ -409,7 +409,22 @@ class SpreadArbStrategy(BaseStrategy):
                 logger.error(f"Leg placement failed [{ex.value}:{side.value}]: {order}")
 
         if len(legs) < 2:
-            # One or both legs failed to place — reverse any that did place
+            # One or both legs failed to place.
+            # In maker2 mode the placed leg is a resting LIMIT — cancel it first so it
+            # can't fill into naked exposure AFTER we return.  If the cancel races a fill
+            # (cancel-rejected by exchange), _hedge_single_leg below handles the filled leg.
+            if maker_both and legs and self.engine:
+                leg = legs[0]
+                if not leg.filled:
+                    try:
+                        await self.engine.cancel_order(leg.exchange, leg.symbol, leg.order_id)
+                        logger.info(
+                            f"Cancelled resting maker leg [{leg.exchange.value}:{symbol}] "
+                            f"{leg.order_id} after counterpart placement failed"
+                        )
+                    except Exception as _ce:
+                        logger.warning(f"Cancel of resting leg failed: {_ce}")
+            # Reverse any that did place AND fill (hedge filled legs)
             for leg in legs:
                 await self._hedge_single_leg(leg)
             if len(legs) == 1:
