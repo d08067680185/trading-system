@@ -529,11 +529,21 @@ export default function FuturesPage({ strategies = [], positions = {}, tickers =
                   {ss.current_rsi.toFixed(1)}
                 </div>
               </div>
-            ) : ss.price_samples != null && (
+            ) : ss.bar_closes != null && (
               <div>
                 <div className="label">{t('futures_warmup')}</div>
                 <div className="num metric" style={{ color: 'var(--t3)' }}>
-                  {ss.price_samples}/{ss.price_samples_needed ?? '?'}
+                  {ss.bar_closes}/{ss.bar_closes_needed ?? '?'}
+                </div>
+              </div>
+            )}
+            {ss.next_bar_in_s != null && (
+              <div>
+                <div className="label">Next bar</div>
+                <div className="metric" style={{ color: 'var(--t3)', fontSize: 13 }}>
+                  {ss.next_bar_in_s >= 60
+                    ? `${Math.floor(ss.next_bar_in_s / 60)}m ${ss.next_bar_in_s % 60}s`
+                    : `${ss.next_bar_in_s}s`}
                 </div>
               </div>
             )}
