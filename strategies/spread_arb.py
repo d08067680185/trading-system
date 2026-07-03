@@ -315,6 +315,25 @@ class SpreadArbStrategy(BaseStrategy):
             sell_tk = self._tickers.get((sell_ex, symbol))
             if buy_tk is None or sell_tk is None:
                 return
+
+            # Reject if either leg's quote is stale — a large spread often
+            # appears precisely because one feed is lagging; trading on stale
+            # data creates inventory risk without a real price edge.
+            _eng_cfg = getattr(getattr(self, "engine", None), "config", None)
+            _max_age = float(
+                getattr(getattr(_eng_cfg, "engine", None), "max_quote_age_s", 10.0)
+                if _eng_cfg else 10.0
+            )
+            _now_ts = time.time()
+            _buy_age = _now_ts - getattr(buy_tk, "timestamp", _now_ts)
+            _sell_age = _now_ts - getattr(sell_tk, "timestamp", _now_ts)
+            if _max_age > 0 and (_buy_age > _max_age or _sell_age > _max_age):
+                logger.warning(
+                    f"Arb [{symbol}] skipped — stale quote: "
+                    f"{buy_ex.value}={_buy_age:.1f}s {sell_ex.value}={_sell_age:.1f}s "
+                    f"(max={_max_age}s)"
+                )
+                return
             _raw = await asyncio.gather(
                 self.engine.place_order(
                     exchange=buy_ex, symbol=symbol, side=OrderSide.BUY,
