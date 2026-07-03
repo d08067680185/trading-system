@@ -572,6 +572,46 @@ function StrategyCard({ strategy, onToggle, onParamChange, onDelete, onEdit, t, 
         </div>
       </div>
 
+      {/* Arb spread: live spreads + paused symbols */}
+      {strategy.id === 'arb_spread' && isActive && strategy.last_spreads_bps && (
+        <div style={{
+          borderTop: '1px solid var(--border)', background: 'var(--surface)',
+          padding: '8px 20px', display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-end',
+        }}>
+          {Object.entries(strategy.last_spreads_bps).map(([sym, bps]) => {
+            const threshold = strategy.entry_threshold_bps ?? 3
+            const hot = bps >= threshold
+            return (
+              <div key={sym}>
+                <div style={{ fontSize: 9, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
+                  {sym} spread
+                </div>
+                <div className="num" style={{ fontSize: 13, fontWeight: 700, color: hot ? 'var(--green)' : 'var(--t1)' }}>
+                  {bps.toFixed(2)} bps
+                  {hot && <span style={{ fontSize: 10, marginLeft: 4, color: 'var(--green)' }}>▲ TRIGGER</span>}
+                </div>
+              </div>
+            )
+          })}
+          {strategy.paused_symbols?.length > 0 && (
+            <div>
+              <div style={{ fontSize: 9, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>PAUSED</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--red)' }}>
+                {strategy.paused_symbols.join(', ')}
+              </div>
+            </div>
+          )}
+          {(strategy.total_mismatches ?? 0) > 0 && (
+            <div>
+              <div style={{ fontSize: 9, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>Mismatches</div>
+              <div className="num" style={{ fontSize: 13, fontWeight: 600, color: '#f0b90b' }}>
+                {strategy.total_mismatches}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Live stats bar — grid layout, labels row + values row, horizontally scrollable */}
       {isActive && (() => {
         const entries = Object.entries(strategy).filter(([k]) => !STATS_SKIP.has(k))
