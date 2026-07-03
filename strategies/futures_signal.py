@@ -11,6 +11,7 @@ market orders.  Supports Binance USDT-M and OKX swap.
 """
 from __future__ import annotations
 
+import json
 from collections import deque
 from decimal import Decimal
 from typing import Optional
@@ -86,6 +87,44 @@ class FuturesSignalStrategy(BaseStrategy):
         # K-line bar aggregation: track current bar boundary
         self._bar_ts: float = 0.0    # epoch-second start of current bar
         self._bar_close: float = 0.0  # last price seen in current bar
+
+        # Position state is persisted to DB settings so it survives restarts.
+        # Loaded lazily on first tick (set_engine is sync; storage is async).
+        self._state_loaded: bool = False
+
+    def _state_key(self) -> str:
+        return f"futures_signal:{self.strategy_id}:position"
+
+    async def _load_state(self) -> None:
+        """Restore position from DB on first tick after startup."""
+        self._state_loaded = True
+        storage = getattr(self.engine, "storage", None) if self.engine else None
+        if storage is None:
+            return
+        try:
+            raw = await storage.get_setting(self._state_key())
+            if raw:
+                state = json.loads(raw)
+                self._position_side = state.get("position_side")
+                self._entry_price   = state.get("entry_price")
+                if self._position_side:
+                    self.logger.info(
+                        f"[FuturesSignal] Restored position: {self._position_side} "
+                        f"@ {self._entry_price} from DB"
+                    )
+        except Exception as e:
+            self.logger.warning(f"[FuturesSignal] State restore failed: {e}")
+
+    async def _save_state(self) -> None:
+        """Persist current position to DB."""
+        storage = getattr(self.engine, "storage", None) if self.engine else None
+        if storage is None:
+            return
+        try:
+            state = {"position_side": self._position_side, "entry_price": self._entry_price}
+            await storage.set_setting(self._state_key(), json.dumps(state))
+        except Exception as e:
+            self.logger.warning(f"[FuturesSignal] State save failed: {e}")
 
     def _exchange(self) -> Exchange:
         return Exchange(self.params["exchange"])
@@ -186,6 +225,10 @@ class FuturesSignalStrategy(BaseStrategy):
         mid = float(t.mid)
         self._last_price = mid
 
+        # ── Lazy state restore (first tick after startup) ─────────────────────
+        if not self._state_loaded:
+            await self._load_state()
+
         # ── Bar aggregation: accumulate ticks into bars, append close on boundary ──
         interval = int(self.params.get("bar_interval_s", 900))
         tick_ts = t.timestamp
@@ -276,6 +319,7 @@ class FuturesSignalStrategy(BaseStrategy):
                 self._position_side = side
                 self._entry_price = price
                 self._total_trades += 1
+                await self._save_state()
                 rsi_str = f" rsi={self._last_rsi:.1f}" if self._last_rsi else ""
                 self.logger.info(
                     f"[FuturesSignal] Opened {side} @{price:.2f} qty={qty}"
@@ -309,6 +353,7 @@ class FuturesSignalStrategy(BaseStrategy):
                 quantity=qty, reduce_only=True,
                 strategy_id=self.strategy_id,
             )
+            await self._save_state()
             self.logger.info(f"[FuturesSignal] Closed {prev_side} reason={reason}")
         except Exception as e:
             self.logger.warning(f"[FuturesSignal] Close {prev_side} failed: {e}")
