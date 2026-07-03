@@ -326,6 +326,10 @@ class SpreadArbStrategy(BaseStrategy):
                 ),
                 return_exceptions=True,
             )
+            # Log exception details before discarding them
+            for _i, (_res, _label) in enumerate(zip(_raw, ["BUY", "SELL"])):
+                if isinstance(_res, Exception):
+                    logger.warning(f"maker2 {_label} leg rejected [{symbol}]: {_res}")
             buy_order  = _raw[0] if not isinstance(_raw[0], Exception) else None
             sell_order = _raw[1] if not isinstance(_raw[1], Exception) else None
         else:
@@ -387,7 +391,15 @@ class SpreadArbStrategy(BaseStrategy):
             # One or both legs failed to place — reverse any that did place
             for leg in legs:
                 await self._hedge_single_leg(leg)
-            self._record_mismatch(symbol)
+            if len(legs) == 1:
+                # True mismatch: one leg placed, other failed → naked exposure existed,
+                # count toward the pause threshold so we back off if this keeps happening.
+                self._record_mismatch(symbol)
+            else:
+                # Both legs failed simultaneously (e.g. dual post-only rejection when
+                # market moved during the ~0ms gather window). No position was taken,
+                # no hedge needed — do NOT penalise the symbol with a mismatch count.
+                logger.warning(f"Both maker2 legs rejected [{symbol}] — no position taken")
             if self.storage and trigger_id is not None:
                 tmp = _OpenArb(legs, symbol, trigger_id=trigger_id)
                 self._finish_trigger(tmp, "place_failed")
