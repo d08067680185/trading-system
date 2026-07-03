@@ -301,6 +301,8 @@ class SpreadArbStrategy(BaseStrategy):
             f"| BUY {buy_qty} @ {buy_ex.value}  SELL {sell_qty} @ {sell_ex.value}"
         )
 
+        _exec_start = time.time()  # arb attempt start; used for duration_s in trigger stats
+
         if maker_both:
             # ── Double-maker: both legs rest as post-only limits on the PASSIVE side
             # (buy rests on bid, sell rests on ask). They never cross the book, so the
@@ -401,7 +403,8 @@ class SpreadArbStrategy(BaseStrategy):
                 # no hedge needed — do NOT penalise the symbol with a mismatch count.
                 logger.warning(f"Both maker2 legs rejected [{symbol}] — no position taken")
             if self.storage and trigger_id is not None:
-                tmp = _OpenArb(legs, symbol, trigger_id=trigger_id)
+                tmp = _OpenArb(legs, symbol, trigger_id=trigger_id,
+                               ts=_exec_start if maker_both else None)
                 self._finish_trigger(tmp, "place_failed")
             return
 
