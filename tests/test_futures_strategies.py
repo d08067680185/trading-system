@@ -51,13 +51,16 @@ class _FakeEngine:
         return True
 
 
-def _ticker(price, exchange=Exchange.BINANCE, symbol="BTC-USDT"):
+def _ticker(price, exchange=Exchange.BINANCE, symbol="BTC-USDT", ts=None):
     p = Decimal(str(price))
-    return Ticker(exchange, symbol, p, p, p, Decimal("0"))
+    t = Ticker(exchange, symbol, p, p, p, Decimal("0"))
+    if ts is not None:
+        t.timestamp = ts
+    return t
 
 
-def _tick_event(price, **kwargs):
-    return TickerEvent(ticker=_ticker(price, **kwargs))
+def _tick_event(price, ts=None, **kwargs):
+    return TickerEvent(ticker=_ticker(price, ts=ts, **kwargs))
 
 
 # ── FuturesTrendStrategy ─────────────────────────────────────────────────────
@@ -224,6 +227,7 @@ def _signal_strat(**params):
         "rsi_period": 3, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
         "stop_loss_pct": 2.0, "take_profit_pct": 6.0,
         "direction": "both", "cooldown_s": 0.0,
+        "bar_interval_s": 1,   # 1-second bars so test ticks cross boundaries easily
     }
     defaults.update(params)
     eng = _FakeEngine()
@@ -232,10 +236,15 @@ def _signal_strat(**params):
     return s, eng
 
 
-def _feed_signal(s, prices):
+def _feed_signal(s, prices, base_ts=1_700_000_000.0):
+    """Feed prices as ticks, each in a separate 1-second bar so signals fire.
+    An extra tick is appended to close the final bar and trigger signal evaluation."""
     async def run():
-        for p in prices:
-            await s.on_ticker(_tick_event(p))
+        for i, p in enumerate(prices):
+            await s.on_ticker(_tick_event(p, ts=base_ts + i))
+        # Close the last bar so signals based on its close price are evaluated
+        if prices:
+            await s.on_ticker(_tick_event(prices[-1], ts=base_ts + len(prices)))
     asyncio.run(run())
 
 
@@ -301,14 +310,14 @@ def test_signal_stop_loss_closes_long():
 
 def test_price_samples_needed_rsi():
     s, _ = _signal_strat(signal_type="rsi", rsi_period=14)
-    assert s.get_status()["price_samples_needed"] == 15  # rsi_period + 1
+    assert s.get_status()["bar_closes_needed"] == 15  # rsi_period + 1
 
 
 def test_price_samples_needed_breakout():
     s, _ = _signal_strat(signal_type="breakout", breakout_period=20)
-    assert s.get_status()["price_samples_needed"] == 21  # breakout_period + 1
+    assert s.get_status()["bar_closes_needed"] == 21  # breakout_period + 1
 
 
 def test_price_samples_needed_ma_cross():
     s, _ = _signal_strat(signal_type="ma_cross", slow_period=30)
-    assert s.get_status()["price_samples_needed"] == 32  # slow_period + 2
+    assert s.get_status()["bar_closes_needed"] == 32  # slow_period + 2

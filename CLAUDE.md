@@ -307,7 +307,36 @@ manually-disconnected or errored connector, and reconnect is non-destructive (no
 The decision logic (`_heal_targets`) is pure and unit-tested; per-exchange feed status is exposed
 in the feeds component's `metrics.critical` / `metrics.degraded`.
 
+### Strategy start states (see `main.py` for current params)
+
+| Strategy | Default | Notes |
+|---|---|---|
+| `arb_spread` | **enabled** | Spot-to-spot only: `BINANCE_SPOT` vs `OKX_SPOT`. OKX swap min contract = 0.01 BTC ≈ $590, making small capital infeasible on swap. |
+| `funding_arb` | disabled | `scan_all=True` can buy unhedged alt spots when the short-perp leg fails; re-enable only after auditing the leg-failure path. |
+| `cash_carry` | disabled | Requires USDT collateral in Binance USDT-M futures; disabled when that wallet is empty. |
+| `spot_grid_btc` | enabled (inactive) | `grid_low=0, grid_high=0` keeps it inert. Set bounds via `POST /api/strategies/spot_grid_btc/params` to activate. |
+| `market_maker` | disabled | Enable via UI when ready. |
+| `trading_comp` | disabled | Enable via UI when ready. |
+| `futures_trend` | disabled | Targets Binance USDT-M futures; needs futures capital. |
+| `futures_grid` | disabled | Same. |
+| `futures_signal` | **enabled** | Runs as **OKX spot, long_only** (RSI dip-buying). OKX swap minimum sizes (BTC ≈ $590/contract) exceed small capital; spot min is negligible. |
+
+**Strategy `total_trades` vs DB `trades` table**: `total_trades` in `get_status()` increments when an order is *placed* (returns non-None). A row in the `trades` table only appears after the order-poll loop confirms `FILLED` status via REST — there can be a lag of up to `order_poll_interval_s` (default 3s).
+
+**arb_spread double-maker leg placement**: both legs are placed via `asyncio.gather` (concurrent REST calls) so the price-drift window between legs is near-zero. Sequential placement (old) created ~300ms between leg 1 and leg 2 REST calls — enough for a fast market to move so the second post-only limit hits a crossed book and is rejected (GTX / OKX post_only). Each rejection increments `mismatch_count[symbol]`; after `max_mismatches` consecutive mismatch events the symbol is added to `_paused_symbols` and no more arbs fire for it. **To resume**: send any params update — `on_params_updated` clears `_paused_symbols` and `_mismatch_count` on every call regardless of what changed:
+```bash
+KEY=$(grep TRADING_API_KEY .env | cut -d= -f2)
+curl -s -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"max_mismatches": 5}' http://localhost:8080/api/strategies/arb_spread/params
+```
+
+**futures_signal RSI uses bar closes, not raw ticks**: the `signal_type=rsi` path aggregates ticks into OHLCV bars of `bar_interval_s` seconds (default `900` = 15 min) and only evaluates RSI / entry signals when a new bar opens (closing the previous one). SL/TP checks still run on every tick. The strategy needs `rsi_period + 1` closed bars before it can emit a signal (~3.75 h at 15 m). `bar_closes` and `bar_closes_needed` in `get_status()` track warmup progress. To warm up faster for testing or in periods of limited data, lower `bar_interval_s` (e.g. `60` for 1-minute bars).
+
+**futures_signal tests** (`tests/test_futures_strategies.py`): `_signal_strat` defaults to `bar_interval_s=1` (1-second bars for deterministic testing). `_feed_signal(s, prices)` sends each price at `base_ts + i` (each in a distinct 1-second bar) **plus one extra trigger tick** at `base_ts + len(prices)` to close the final bar and fire the signal. Tests that send N prices produce N closed bars; the signal fires on the Nth close.
+
 ### Known limitations
 - OKX private WS returns error 60011 (auth failed) — this is an API key permissions issue, **does not affect market data**. One warning is logged per connection attempt, then silenced via `_priv_auth_warned` flag.
 - Binance listen key returns 410 (no user data stream access) — same pattern, market data unaffected.
 - Process name on macOS: the venv Python resolves to `/Library/Frameworks/Python.framework/.../Python`, so `pkill -f "main.py"` is required (not `venv/bin/python main.py`).
+- **OKX spot market BUY `tgtCcy`**: OKX spot API defaults `sz` to *quote* currency (USDT) on BUY market orders. `OKXConnector.place_order` always injects `tgtCcy=base_ccy` for spot market buys so `sz` is interpreted as the coin amount — the rest of the system sizes orders in coin units. Do not remove this without checking the OKX docs.
+- **OKX swap contract minimums**: minimum order on OKX USDT-M swap is 1 contract (BTC: 0.01 BTC ≈ $590, ETH: 0.01 ETH ≈ $30+). Strategies targeting swap must account for this in `position_usdt` sizing. `_ctval()` in `connectors/okx.py` returns 1 for spot (no conversion needed).

@@ -26,7 +26,8 @@ class FuturesSignalStrategy(BaseStrategy):
       symbol           str    trading pair                           default "BTC-USDT"
       position_usdt    float  USDT per trade                        default 50
       signal_type      str    "rsi" | "breakout" | "ma_cross"      default "rsi"
-      rsi_period       int    RSI calculation period                 default 14
+      bar_interval_s   int    seconds per OHLCV bar for RSI/MA     default 900 (15m)
+      rsi_period       int    RSI bars (not ticks)                  default 14
       rsi_oversold     float  RSI level that triggers a long        default 30
       rsi_overbought   float  RSI level that triggers a short       default 70
       breakout_period  int    N-bar high/low lookback window        default 20
@@ -44,6 +45,7 @@ class FuturesSignalStrategy(BaseStrategy):
             "symbol": "BTC-USDT",
             "position_usdt": 50.0,
             "signal_type": "rsi",
+            "bar_interval_s": 900,
             "rsi_period": 14,
             "rsi_oversold": 30.0,
             "rsi_overbought": 70.0,
@@ -58,7 +60,7 @@ class FuturesSignalStrategy(BaseStrategy):
         defaults.update(params)
         super().__init__(strategy_id, defaults)
 
-        # Price history (sized to accommodate all lookback periods)
+        # Bar-close price history for signal computation (one entry per closed bar)
         max_period = max(
             int(self.params["rsi_period"]) + 1,
             int(self.params["breakout_period"]),
@@ -80,6 +82,10 @@ class FuturesSignalStrategy(BaseStrategy):
         # For MA cross tracking
         self._prev_fast_ma: Optional[float] = None
         self._prev_slow_ma: Optional[float] = None
+
+        # K-line bar aggregation: track current bar boundary
+        self._bar_ts: float = 0.0    # epoch-second start of current bar
+        self._bar_close: float = 0.0  # last price seen in current bar
 
     def _exchange(self) -> Exchange:
         return Exchange(self.params["exchange"])
@@ -179,9 +185,23 @@ class FuturesSignalStrategy(BaseStrategy):
 
         mid = float(t.mid)
         self._last_price = mid
-        self._prices.append(mid)
 
-        # Check stop-loss / take-profit
+        # ── Bar aggregation: accumulate ticks into bars, append close on boundary ──
+        interval = int(self.params.get("bar_interval_s", 900))
+        tick_ts = t.timestamp
+        bar_start = int(tick_ts // interval) * interval
+        new_bar = bar_start > self._bar_ts
+
+        if new_bar and self._bar_close:
+            # A new bar just opened — close the previous bar and record its close price
+            self._prices.append(self._bar_close)
+            self._bar_ts = bar_start
+        elif self._bar_ts == 0:
+            self._bar_ts = bar_start  # initialise on first tick
+
+        self._bar_close = mid  # track running close of current bar
+
+        # ── Real-time SL/TP check (every tick) ────────────────────────────────
         if self._position_side and self._entry_price:
             ep = self._entry_price
             sl = float(self.params["stop_loss_pct"]) / 100
@@ -201,14 +221,14 @@ class FuturesSignalStrategy(BaseStrategy):
                     await self._close_position("take_profit")
                     return []
 
+        # ── Signal evaluation only on bar-close events ────────────────────────
+        if not new_bar:
+            return []
+
         # Cooldown check
         now = self._now()
         cooldown = float(self.params.get("cooldown_s", 120))
         if not self._is_backtest() and (now - self._last_signal_t) < cooldown:
-            # Still compute indicators (they need continuous updates)
-            sig_type = self.params.get("signal_type", "rsi")
-            if sig_type == "rsi":
-                self._compute_rsi()
             return []
 
         sig_type = self.params.get("signal_type", "rsi")
@@ -300,7 +320,8 @@ class FuturesSignalStrategy(BaseStrategy):
     def on_params_updated(self, changed: dict) -> None:
         # Reset indicator history if key params change
         if any(k in changed for k in (
-            "rsi_period", "breakout_period", "fast_period", "slow_period", "signal_type"
+            "rsi_period", "breakout_period", "fast_period", "slow_period",
+            "signal_type", "bar_interval_s",
         )):
             max_period = max(
                 int(self.params["rsi_period"]) + 1,
@@ -313,6 +334,8 @@ class FuturesSignalStrategy(BaseStrategy):
             self._last_rsi = None
             self._prev_fast_ma = None
             self._prev_slow_ma = None
+            self._bar_ts = 0.0
+            self._bar_close = 0.0
 
     def get_status(self) -> dict:
         sig_type = self.params.get("signal_type", "rsi")
@@ -334,6 +357,7 @@ class FuturesSignalStrategy(BaseStrategy):
             "last_price": round(self._last_price, 2) if self._last_price else None,
             "current_rsi": round(self._last_rsi, 1) if self._last_rsi is not None else None,
             "total_trades": self._total_trades,
-            "price_samples": len(self._prices),
-            "price_samples_needed": needed,
+            "bar_closes": len(self._prices),
+            "bar_closes_needed": needed,
+            "bar_interval_s": self.params.get("bar_interval_s", 900),
         }

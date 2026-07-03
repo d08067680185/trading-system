@@ -279,3 +279,52 @@ def test_ensure_market_data_fails_without_quotes():
     s = _fund(eng, quote_warmup_s=0.6)
     ok = asyncio.run(s._ensure_market_data("NEW-USDT", [Exchange.BINANCE, Exchange.OKX]))
     assert ok is False
+
+
+# ── Entry failure back-off ────────────────────────────────────────────────────
+
+def test_entry_first_leg_failure_sets_backoff():
+    """First-leg failure records the timestamp so the symbol is skipped next cycle."""
+    async def run():
+        eng = _FundEngine(fail_on_call={1})            # first order rejected
+        s = _fund(eng, maker_legs=False)
+        s._tickers[(Exchange.OKX, SYM)] = _tick(Exchange.OKX)
+        s._tickers[(Exchange.BINANCE, SYM)] = _tick(Exchange.BINANCE)
+        s._pending_entries[SYM] = _meta()
+        await s._execute_entry_legs(
+            SYM, [_sig(Exchange.OKX, OrderSide.BUY), _sig(Exchange.BINANCE, OrderSide.SELL)])
+        return s
+
+    s = asyncio.run(run())
+    assert SYM in s._entry_fail_ts
+    assert SYM not in s._open_arbs
+
+
+def test_entry_backoff_suppresses_retry(monkeypatch):
+    """_evaluate_arb returns [] while the symbol is still within its cooldown window."""
+    s = _fund(_FundEngine(), maker_legs=False, entry_fail_cooldown_s=3600)
+    s._entry_fail_ts[SYM] = time.time()   # just failed
+
+    # Inject rates so the symbol would otherwise pass all other gates
+    s._rates[SYM] = {"binance": 0.01, "okx": -0.005}
+
+    result = asyncio.run(s._evaluate_arb(SYM, 0.01, -0.005))
+    assert result == []                    # suppressed by back-off, not by rate gate
+
+
+def test_successful_entry_clears_backoff():
+    """A successful two-leg entry resets the back-off timestamp."""
+    async def run():
+        eng = _FundEngine()
+        s = _fund(eng, maker_legs=False)
+        s._entry_fail_ts[SYM] = time.time() - 100   # previous failure
+        s._tickers[(Exchange.OKX, SYM)] = _tick(Exchange.OKX)
+        s._tickers[(Exchange.BINANCE, SYM)] = _tick(Exchange.BINANCE)
+        s._pending_entries[SYM] = _meta()
+        await s._execute_entry_legs(
+            SYM, [_sig(Exchange.OKX, OrderSide.BUY), _sig(Exchange.BINANCE, OrderSide.SELL)])
+        return s
+
+    s = asyncio.run(run())
+    assert SYM not in s._entry_fail_ts
+    assert SYM in s._open_arbs

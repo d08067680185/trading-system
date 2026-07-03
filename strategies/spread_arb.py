@@ -87,7 +87,7 @@ class SpreadArbStrategy(BaseStrategy):
             "cooldown_s":       30.0,
             "max_position_usdt": 50.0,
             "leg_timeout_s":     8.0,
-            "max_mismatches":    3,
+            "max_mismatches":    5,
             "use_maker_leg":     True,
             "maker_timeout_s":   3.0,
             # ── Double-maker mode ─────────────────────────────────────────────
@@ -307,20 +307,27 @@ class SpreadArbStrategy(BaseStrategy):
             # exchange accepts them as maker; a fill needs a counterparty, otherwise the
             # leg times out and is cancelled (no loss). Locked spread (ask-bid) ≥ the
             # taker spread we triggered on, so the threshold stays conservative.
+            # Both REST calls are issued concurrently to minimise the price-drift window
+            # between legs (sequential placement creates ~300ms gap → post-only rejection).
             buy_tk  = self._tickers.get((buy_ex,  symbol))
             sell_tk = self._tickers.get((sell_ex, symbol))
             if buy_tk is None or sell_tk is None:
                 return
-            buy_order = await self.engine.place_order(
-                exchange=buy_ex, symbol=symbol, side=OrderSide.BUY,
-                order_type=OrderType.LIMIT, quantity=buy_qty, price=buy_tk.bid,
-                strategy_id=self.strategy_id, post_only=True,
+            _raw = await asyncio.gather(
+                self.engine.place_order(
+                    exchange=buy_ex, symbol=symbol, side=OrderSide.BUY,
+                    order_type=OrderType.LIMIT, quantity=buy_qty, price=buy_tk.bid,
+                    strategy_id=self.strategy_id, post_only=True,
+                ),
+                self.engine.place_order(
+                    exchange=sell_ex, symbol=symbol, side=OrderSide.SELL,
+                    order_type=OrderType.LIMIT, quantity=sell_qty, price=sell_tk.ask,
+                    strategy_id=self.strategy_id, post_only=True,
+                ),
+                return_exceptions=True,
             )
-            sell_order = await self.engine.place_order(
-                exchange=sell_ex, symbol=symbol, side=OrderSide.SELL,
-                order_type=OrderType.LIMIT, quantity=sell_qty, price=sell_tk.ask,
-                strategy_id=self.strategy_id, post_only=True,
-            )
+            buy_order  = _raw[0] if not isinstance(_raw[0], Exception) else None
+            sell_order = _raw[1] if not isinstance(_raw[1], Exception) else None
         else:
             # ── Single-maker (buy) + taker (sell) — legacy behaviour ──────────
             # Post-Only on the buy side saves ~6bps; sell leg Market for immediate fill.
@@ -575,6 +582,11 @@ class SpreadArbStrategy(BaseStrategy):
         if arb:
             for leg in arb.legs:
                 self._order_to_leg.pop(leg.order_id, None)
+
+    def on_params_updated(self, changed: dict) -> None:
+        self._paused_symbols.clear()
+        self._mismatch_count.clear()
+        logger.info("arb_spread params updated — paused symbols and mismatch counts reset")
 
     def _record_mismatch(self, symbol: str) -> None:
         self._mismatch_total += 1

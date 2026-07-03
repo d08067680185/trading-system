@@ -117,6 +117,11 @@ class FundingRateArbStrategy(BaseStrategy):
             "scan_all": False,
             "scan_top_n": 8,
             "min_volume_24h_usdt": 50_000_000.0,
+            # ── Entry failure back-off ─────────────────────────────────────────
+            # After a first-leg failure, skip the symbol for this many seconds
+            # (default 4h = one funding period) so a broken/suspended instrument
+            # does not spam retries every check_interval_s.
+            "entry_fail_cooldown_s": 14_400.0,
         }
         defaults.update(params)
         super().__init__(strategy_id, defaults)
@@ -137,6 +142,8 @@ class FundingRateArbStrategy(BaseStrategy):
         self._pending_entries: dict[str, dict] = {}
         # order_id → "open" | "filled" | "cancelled" | "rejected" for resting maker legs
         self._maker_orders: dict[str, str] = {}
+        # symbol → epoch-second of last entry failure (for back-off)
+        self._entry_fail_ts: dict[str, float] = {}
 
         self._poll_task: Optional[asyncio.Task] = None
         self._ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -326,6 +333,16 @@ class FundingRateArbStrategy(BaseStrategy):
         if diff_ann_bps < min_diff:
             return []
 
+        # ── Entry failure back-off ────────────────────────────────────────────
+        fail_ts = self._entry_fail_ts.get(symbol, 0.0)
+        cooldown = float(self.params.get("entry_fail_cooldown_s", 14_400.0))
+        if fail_ts > 0 and (time.time() - fail_ts) < cooldown:
+            remaining_h = (cooldown - (time.time() - fail_ts)) / 3600
+            self.logger.debug(
+                f"Entry back-off [{symbol}]: {remaining_h:.1f}h remaining after prior failure"
+            )
+            return []
+
         # ── Fee viability gate ────────────────────────────────────────────────
         # 4 legs × effective fee = round-trip cost as fraction of position.
         # Maker mode: post-only legs pay ~0; maker_eff_fee_bps > 0 prices in the
@@ -486,6 +503,7 @@ class FundingRateArbStrategy(BaseStrategy):
         first = await self._execute_leg(sigs[0])
         if first is None:
             self.logger.warning(f"Entry aborted [{symbol}]: first leg failed")
+            self._entry_fail_ts[symbol] = time.time()
             return
 
         second = await self._execute_leg(sigs[1])
@@ -510,6 +528,7 @@ class FundingRateArbStrategy(BaseStrategy):
 
         self._open_arbs[symbol] = meta
         self._entry_count += 1
+        self._entry_fail_ts.pop(symbol, None)  # reset back-off on successful entry
 
     async def _execute_exit_legs(self, symbol: str, sigs: list[Signal]) -> None:
         """Execute both reduce_only exit legs; pop the arb only if both placed so a
@@ -709,6 +728,13 @@ class FundingRateArbStrategy(BaseStrategy):
     # ── Status ────────────────────────────────────────────────────────────────
 
     def get_status(self) -> dict:
+        now = time.time()
+        cooldown = float(self.params.get("entry_fail_cooldown_s", 14_400.0))
+        backed_off = {
+            sym: round((cooldown - (now - ts)) / 3600, 2)
+            for sym, ts in self._entry_fail_ts.items()
+            if now - ts < cooldown
+        }
         return {
             "strategy_id": self.strategy_id,
             "enabled": self._enabled,
@@ -719,9 +745,10 @@ class FundingRateArbStrategy(BaseStrategy):
             "open_arbs": {
                 sym: {
                     **arb,
-                    "age_h": round((time.time() - arb["entry_ts"]) / 3600, 2),
+                    "age_h": round((now - arb["entry_ts"]) / 3600, 2),
                 }
                 for sym, arb in self._open_arbs.items()
             },
+            "entry_backed_off": backed_off,  # symbol → remaining cooldown hours
             "latest_rates": self._rates,
         }
