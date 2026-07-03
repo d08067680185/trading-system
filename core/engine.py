@@ -579,7 +579,7 @@ class TradingEngine:
         async def _db_warn(msg: str) -> None:
             if storage and signal.strategy_id:
                 try:
-                    await storage.log_message(signal.strategy_id, "WARNING", msg)
+                    await storage.store_log(signal.strategy_id, "WARNING", msg)
                 except Exception:
                     pass
 
