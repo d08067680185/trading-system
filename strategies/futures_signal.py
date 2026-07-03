@@ -474,6 +474,7 @@ class FuturesSignalStrategy(BaseStrategy):
             self._bar_close = 0.0
 
     def get_status(self) -> dict:
+        import time as _time
         sig_type = self.params.get("signal_type", "rsi")
         if sig_type == "rsi":
             needed = int(self.params["rsi_period"]) + 1
@@ -481,6 +482,10 @@ class FuturesSignalStrategy(BaseStrategy):
             needed = int(self.params["breakout_period"]) + 1
         else:  # ma_cross
             needed = int(self.params["slow_period"]) + 2
+        interval = int(self.params.get("bar_interval_s", 900))
+        now_ts = _time.time()
+        next_bar_ts = (int(now_ts // interval) + 1) * interval
+        next_bar_in_s = round(next_bar_ts - now_ts)
         return {
             **self._pnl_status(),
             "strategy_id": self.strategy_id,
@@ -495,5 +500,6 @@ class FuturesSignalStrategy(BaseStrategy):
             "total_trades": self._total_trades,
             "bar_closes": len(self._prices),
             "bar_closes_needed": needed,
-            "bar_interval_s": self.params.get("bar_interval_s", 900),
+            "bar_interval_s": interval,
+            "next_bar_in_s": next_bar_in_s,
         }
