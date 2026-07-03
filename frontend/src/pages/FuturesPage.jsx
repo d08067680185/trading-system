@@ -518,6 +518,20 @@ export default function FuturesPage({ strategies = [], positions = {}, tickers =
                 <div className="num metric">{ss.entry_price.toLocaleString('en', { maximumFractionDigits: 2 })}</div>
               </div>
             )}
+            {ss.unrealized_pnl_usdt != null && (
+              <div>
+                <div className="label">Unrealized</div>
+                <div className="num metric" style={{
+                  fontWeight: 700,
+                  color: ss.unrealized_pnl_usdt >= 0 ? 'var(--green)' : 'var(--red)',
+                }}>
+                  {ss.unrealized_pnl_usdt >= 0 ? '+' : ''}{ss.unrealized_pnl_usdt.toFixed(4)}
+                  <span style={{ fontSize: 11, marginLeft: 4, opacity: 0.8 }}>
+                    ({ss.unrealized_pct >= 0 ? '+' : ''}{ss.unrealized_pct?.toFixed(2)}%)
+                  </span>
+                </div>
+              </div>
+            )}
             {ss.current_rsi != null ? (
               <div>
                 <div className="label">RSI({ss.params?.rsi_period ?? 14})</div>

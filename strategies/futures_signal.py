@@ -486,6 +486,20 @@ class FuturesSignalStrategy(BaseStrategy):
         now_ts = _time.time()
         next_bar_ts = (int(now_ts // interval) + 1) * interval
         next_bar_in_s = round(next_bar_ts - now_ts)
+
+        # Unrealized PnL for open position
+        unrealized_pnl: float | None = None
+        unrealized_pct: float | None = None
+        if self._position_side and self._entry_price and self._last_price:
+            usdt = float(self.params["position_usdt"])
+            qty = usdt / self._entry_price
+            if self._position_side == "long":
+                unrealized_pnl = round((self._last_price - self._entry_price) * qty, 4)
+                unrealized_pct = round((self._last_price - self._entry_price) / self._entry_price * 100, 3)
+            else:
+                unrealized_pnl = round((self._entry_price - self._last_price) * qty, 4)
+                unrealized_pct = round((self._entry_price - self._last_price) / self._entry_price * 100, 3)
+
         return {
             **self._pnl_status(),
             "strategy_id": self.strategy_id,
@@ -497,6 +511,8 @@ class FuturesSignalStrategy(BaseStrategy):
             "entry_price": round(self._entry_price, 2) if self._entry_price else None,
             "last_price": round(self._last_price, 2) if self._last_price else None,
             "current_rsi": round(self._last_rsi, 1) if self._last_rsi is not None else None,
+            "unrealized_pnl_usdt": unrealized_pnl,
+            "unrealized_pct": unrealized_pct,
             "total_trades": self._total_trades,
             "bar_closes": len(self._prices),
             "bar_closes_needed": needed,
