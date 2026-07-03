@@ -403,13 +403,24 @@ async def main() -> None:
     # Make storage available to all strategies via engine (used by futures_signal state persistence)
     engine.storage = storage
 
-    # Attach DB log handlers to all registered strategies
+    # Attach DB log handlers to all registered strategies.
+    # Some strategies (e.g. spread_arb) use a module-level logger in addition
+    # to self.logger; attach to both so all logs appear in /api/logs.
     from data.log_handler import StrategyDBHandler
     _db_log_fmt = logging.Formatter("%(message)s")
+    _module_logger_map = {
+        "arb_spread": "SpreadArbStrategy",
+    }
     for _strat in engine.strategies:
         _h = StrategyDBHandler(storage, _strat.strategy_id)
         _h.setFormatter(_db_log_fmt)
         _strat.logger.addHandler(_h)
+        # Also wire the module-level logger if this strategy has one
+        _ml_name = _module_logger_map.get(_strat.strategy_id)
+        if _ml_name:
+            _h2 = StrategyDBHandler(storage, _strat.strategy_id)
+            _h2.setFormatter(_db_log_fmt)
+            logging.getLogger(_ml_name).addHandler(_h2)
     logger.info("Strategy DB log handlers attached")
 
     # Live data collection
