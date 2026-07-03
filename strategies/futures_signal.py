@@ -19,6 +19,19 @@ from typing import Optional
 from core.types import Exchange, OrderSide, OrderType, TickerEvent, OrderUpdateEvent
 from strategies.base import BaseStrategy
 
+# OKX public candles endpoint (no auth required)
+_OKX_CANDLES_URL = "https://www.okx.com/api/v5/market/candles"
+# Binance spot/futures klines
+_BINANCE_SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
+_BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
+
+# bar_interval_s → OKX bar string
+_OKX_BAR = {60: "1m", 180: "3m", 300: "5m", 900: "15m", 1800: "30m",
+             3600: "1H", 14400: "4H", 86400: "1D"}
+# bar_interval_s → Binance interval string
+_BINANCE_BAR = {60: "1m", 180: "3m", 300: "5m", 900: "15m", 1800: "30m",
+                3600: "1h", 14400: "4h", 86400: "1d"}
+
 
 class FuturesSignalStrategy(BaseStrategy):
     """
@@ -96,24 +109,102 @@ class FuturesSignalStrategy(BaseStrategy):
         return f"futures_signal:{self.strategy_id}:position"
 
     async def _load_state(self) -> None:
-        """Restore position from DB on first tick after startup."""
+        """Restore position from DB + pre-fill bar history from exchange REST API."""
         self._state_loaded = True
-        storage = getattr(self.engine, "storage", None) if self.engine else None
-        if storage is None:
+        if self._is_backtest():
             return
+        storage = getattr(self.engine, "storage", None) if self.engine else None
+        if storage is not None:
+            try:
+                raw = await storage.get_setting(self._state_key())
+                if raw:
+                    state = json.loads(raw)
+                    self._position_side = state.get("position_side")
+                    self._entry_price   = state.get("entry_price")
+                    if self._position_side:
+                        self.logger.info(
+                            f"[FuturesSignal] Restored position: {self._position_side} "
+                            f"@ {self._entry_price} from DB"
+                        )
+            except Exception as e:
+                self.logger.warning(f"[FuturesSignal] State restore failed: {e}")
+
+        # Pre-fill bar history so RSI is ready immediately instead of waiting ~3.75h
+        await self._warmup_from_history()
+
+    async def _warmup_from_history(self) -> None:
+        """Fetch recent completed bars from exchange REST and seed _prices."""
+        import asyncio
+        import aiohttp
+        interval = int(self.params.get("bar_interval_s", 900))
+        needed = int(self.params.get("rsi_period", 14)) + 5  # a few extra for Wilder smoothing
+
+        ex = self._exchange()
+        sym = self._symbol()
+        closes: list[float] = []
+
         try:
-            raw = await storage.get_setting(self._state_key())
-            if raw:
-                state = json.loads(raw)
-                self._position_side = state.get("position_side")
-                self._entry_price   = state.get("entry_price")
-                if self._position_side:
-                    self.logger.info(
-                        f"[FuturesSignal] Restored position: {self._position_side} "
-                        f"@ {self._entry_price} from DB"
-                    )
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as session:
+                if ex in (Exchange.OKX, Exchange.OKX_SPOT):
+                    bar_str = _OKX_BAR.get(interval)
+                    if bar_str is None:
+                        return
+                    # OKX spot instId = "BTC-USDT"; swap instId = "BTC-USDT-SWAP"
+                    inst_id = sym if ex == Exchange.OKX_SPOT else f"{sym}-SWAP"
+                    async with session.get(
+                        _OKX_CANDLES_URL,
+                        params={"instId": inst_id, "bar": bar_str, "limit": str(needed)},
+                    ) as resp:
+                        if resp.status != 200:
+                            return
+                        body = await resp.json()
+                        rows = body.get("data", [])
+                        # OKX returns newest-first; only take confirmed bars (confirm=="1")
+                        confirmed = [r for r in rows if r[8] == "1"]
+                        closes = [float(r[4]) for r in reversed(confirmed)]
+
+                elif ex == Exchange.BINANCE:
+                    bar_str = _BINANCE_BAR.get(interval)
+                    if bar_str is None:
+                        return
+                    async with session.get(
+                        _BINANCE_FUTURES_KLINES_URL,
+                        params={"symbol": sym.replace("-", ""), "interval": bar_str,
+                                "limit": str(needed)},
+                    ) as resp:
+                        if resp.status != 200:
+                            return
+                        rows = await resp.json()
+                        # Binance returns oldest-first; last row = current (incomplete) bar
+                        closes = [float(r[4]) for r in rows[:-1]]
+                else:
+                    return
         except Exception as e:
-            self.logger.warning(f"[FuturesSignal] State restore failed: {e}")
+            self.logger.warning(f"[FuturesSignal] History warmup failed: {e}")
+            return
+
+        if len(closes) < 2:
+            return
+
+        # Seed _prices with historical closes (oldest first, drop partial current bar)
+        self._prices.clear()
+        self._avg_gain = None
+        self._avg_loss = None
+        self._last_rsi = None
+        for c in closes:
+            self._prices.append(c)
+
+        # Advance bar timestamp so bar aggregation doesn't re-count current bar
+        import time as _time
+        self._bar_ts = int(_time.time() // interval) * interval
+        self._bar_close = closes[-1] if closes else 0.0
+
+        self.logger.info(
+            f"[FuturesSignal] History warmup: {len(closes)} bars loaded "
+            f"(bar={interval}s), RSI ready={len(closes) >= int(self.params.get('rsi_period',14))+1}"
+        )
 
     async def _save_state(self) -> None:
         """Persist current position to DB."""
