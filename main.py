@@ -400,6 +400,8 @@ async def main() -> None:
 
     # Trigger-quality logging for spread arb (arb_triggers table)
     spread_arb.storage = storage
+    # Make storage available to all strategies via engine (used by futures_signal state persistence)
+    engine.storage = storage
 
     # Attach DB log handlers to all registered strategies
     from data.log_handler import StrategyDBHandler

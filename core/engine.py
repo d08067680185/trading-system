@@ -574,8 +574,22 @@ class TradingEngine:
     # ── Order execution ───────────────────────────────────────────────────────
 
     async def _execute_signal(self, signal: Signal) -> Optional[Order]:
+        storage = getattr(self, "storage", None)
+
+        async def _db_warn(msg: str) -> None:
+            if storage and signal.strategy_id:
+                try:
+                    await storage.log_message(signal.strategy_id, "WARNING", msg)
+                except Exception:
+                    pass
+
         if not self.risk_manager.check_signal(signal):
-            self.logger.warning(f"Signal blocked by risk: {signal}")
+            reason = (
+                f"Order blocked by risk manager: {signal.side.value} {signal.quantity} "
+                f"{signal.exchange.value}:{signal.symbol}"
+            )
+            self.logger.warning(reason)
+            await _db_warn(reason)
             return None
 
         connector = self.connectors.get(signal.exchange)
@@ -589,10 +603,13 @@ class TradingEngine:
             age = self._quote_age(signal.exchange.value, signal.symbol)
             max_age = self.config.engine.max_quote_age_s
             if max_age > 0 and (age is None or age > max_age):
-                self.logger.warning(
-                    f"Stale quote for {signal.exchange.value}:{signal.symbol} "
-                    f"(age={age if age is None else round(age,1)}s > {max_age}s) — blocking entry"
+                age_str = "None" if age is None else f"{round(age, 1)}s"
+                reason = (
+                    f"Order blocked: stale quote {signal.exchange.value}:{signal.symbol} "
+                    f"age={age_str} > {max_age}s"
                 )
+                self.logger.warning(reason)
+                await _db_warn(reason)
                 return None
 
         _RETRY_ERRORS = ("timeout", "connection", "network", "reset", "eof", "service unavailable", "503", "502", "429")
@@ -640,7 +657,9 @@ class TradingEngine:
                 wait = 0.5 * (2 ** attempt)
                 self.logger.warning(f"Order placement transient error (attempt {attempt+1}/3), retrying in {wait}s: {e}")
                 await asyncio.sleep(wait)
-        self.logger.error(f"Order placement failed: {last_exc}", exc_info=True)
+        reason = f"Order placement failed [{signal.exchange.value}:{signal.symbol}]: {last_exc}"
+        self.logger.error(reason, exc_info=True)
+        await _db_warn(reason)
         return None
 
     # ── Public helpers (called by strategies) ─────────────────────────────────
