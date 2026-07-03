@@ -420,9 +420,11 @@ class FuturesSignalStrategy(BaseStrategy):
                 )
             else:
                 rsi_str = f" rsi={self._last_rsi:.1f}" if self._last_rsi else ""
+                _rm = getattr(getattr(self, "engine", None), "risk_manager", None)
+                _reason = getattr(_rm, "last_block_reason", "") or "unknown"
                 self.logger.warning(
                     f"[FuturesSignal] Order blocked/rejected: {side} @{price:.2f} qty={qty}"
-                    f" exchange={self._exchange().value}{rsi_str} (risk gate or min_size?)"
+                    f" exchange={self._exchange().value}{rsi_str} reason={_reason}"
                 )
         except Exception as e:
             self.logger.warning(f"[FuturesSignal] Open {side} failed: {e}")
