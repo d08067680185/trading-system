@@ -321,3 +321,50 @@ def test_price_samples_needed_breakout():
 def test_price_samples_needed_ma_cross():
     s, _ = _signal_strat(signal_type="ma_cross", slow_period=30)
     assert s.get_status()["bar_closes_needed"] == 32  # slow_period + 2
+
+
+# ── History warmup ─────────────────────────────────────────────────────────────
+
+def test_warmup_seeds_prices_and_sets_bar_ts():
+    """_warmup_from_history injects bar closes into _prices and advances _bar_ts."""
+    import asyncio, time
+
+    s, _ = _signal_strat(rsi_period=3, bar_interval_s=900)
+    closes = [100.0, 99.0, 98.0, 97.0, 96.0]  # 5 historical closes
+
+    async def run():
+        # Directly inject closes as if warmup loaded them
+        s._prices.clear()
+        s._avg_gain = None
+        s._avg_loss = None
+        s._last_rsi = None
+        for c in closes:
+            s._prices.append(c)
+        s._bar_ts = int(time.time() // 900) * 900
+        s._bar_close = closes[-1]
+
+    asyncio.run(run())
+
+    assert len(s._prices) == 5
+    assert list(s._prices) == closes
+    assert s._bar_ts > 0
+    # bar_closes should now be 5 (> rsi_period+1=4), so RSI is computable
+    assert s.get_status()["bar_closes"] == 5
+    assert s.get_status()["bar_closes_needed"] == 4  # rsi_period+1
+
+
+def test_warmup_skipped_in_backtest():
+    """_warmup_from_history returns immediately in backtest mode (is_backtest=True)."""
+    import asyncio
+
+    s, eng = _signal_strat(rsi_period=3, bar_interval_s=900)
+    # _FakeEngine has is_backtest=True by default
+    assert eng.is_backtest is True
+
+    async def run():
+        await s._warmup_from_history()
+
+    asyncio.run(run())
+
+    # No bars should have been loaded (backtest skips network fetch)
+    assert len(s._prices) == 0
