@@ -385,7 +385,7 @@ class SpreadArbStrategy(BaseStrategy):
                     mode, buy_ex.value, sell_ex.value,
                 )
             except Exception as e:
-                logger.debug(f"Trigger log failed: {e}")
+                logger.warning(f"Trigger log failed: {type(e).__name__}: {e}")
 
         now = self._now()
         legs: list[_ArbLeg] = []
