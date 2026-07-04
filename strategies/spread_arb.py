@@ -251,7 +251,9 @@ class SpreadArbStrategy(BaseStrategy):
         # Warm the balance cache while the spread is approaching the threshold so
         # the inventory check at trigger time reads a fresh cache instead of
         # adding a REST round-trip to the latency-critical placement path.
-        if best_spread >= threshold * Decimal("0.7"):
+        # Also fetch once at startup (empty cache) so the dashboard card can show
+        # inventory before the first hot spread.
+        if best_spread >= threshold * Decimal("0.7") or not self._bal_ts:
             self._refresh_balances_soon(Exchange.BINANCE_SPOT, Exchange.OKX_SPOT)
 
         # ── Spread persistence: require N consecutive ticks above threshold ────
