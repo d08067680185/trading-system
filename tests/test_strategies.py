@@ -326,3 +326,51 @@ def test_arb_proceeds_when_perms_ok():
     s = _arb(eng)
     _feed_arb_open(s)
     assert len(eng.placed) == 2
+
+def test_arb_skipped_on_insufficient_inventory():
+    """Fresh balance cache showing an unfundable leg → skip before placing."""
+    import time as _t
+    eng = _FakeEngine()
+    s = _arb(eng)
+    # trigger buys @OKX (needs USDT there) and sells @BINANCE (needs BTC there)
+    s._bal = {Exchange.OKX_SPOT: {"USDT": Decimal("3")},      # < 10 USDT notional
+              Exchange.BINANCE_SPOT: {"BTC": Decimal("1")}}
+    s._bal_ts = {Exchange.OKX_SPOT: _t.time(), Exchange.BINANCE_SPOT: _t.time()}
+    _feed_arb_open(s)
+    assert eng.placed == []
+    assert s._mismatch_count == {}
+
+
+def test_arb_insufficient_base_on_sell_leg():
+    import time as _t
+    eng = _FakeEngine()
+    s = _arb(eng)
+    s._bal = {Exchange.OKX_SPOT: {"USDT": Decimal("100")},
+              Exchange.BINANCE_SPOT: {"BTC": Decimal("0")}}   # nothing to sell
+    s._bal_ts = {Exchange.OKX_SPOT: _t.time(), Exchange.BINANCE_SPOT: _t.time()}
+    _feed_arb_open(s)
+    assert eng.placed == []
+
+
+def test_arb_fails_open_on_stale_balance_cache():
+    """Stale cache must NOT block the trade — exchange rejection is the backstop."""
+    import time as _t
+    eng = _FakeEngine()
+    s = _arb(eng)
+    s._bal = {Exchange.OKX_SPOT: {"USDT": Decimal("0")}}      # would block if fresh
+    s._bal_ts = {Exchange.OKX_SPOT: _t.time() - 9999}         # but it's stale
+    _feed_arb_open(s)
+    assert len(eng.placed) == 2
+
+
+def test_arb_proceeds_with_sufficient_inventory():
+    import time as _t
+    eng = _FakeEngine()
+    s = _arb(eng)
+    s._bal = {Exchange.OKX_SPOT: {"USDT": Decimal("100"), "BTC": Decimal("1")},
+              Exchange.BINANCE_SPOT: {"USDT": Decimal("100"), "BTC": Decimal("1")}}
+    s._bal_ts = {Exchange.OKX_SPOT: _t.time(), Exchange.BINANCE_SPOT: _t.time()}
+    _feed_arb_open(s)
+    assert len(eng.placed) == 2
+    inv = s.get_status()["inventory"]
+    assert inv["okx_spot"]["USDT"] == 100.0 and inv["binance_spot"]["BTC"] == 1.0

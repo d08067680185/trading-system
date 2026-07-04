@@ -129,7 +129,7 @@ const STATS_SKIP = new Set([
   'strategy_id', 'id', 'name', 'enabled', 'params', 'description', 'stats',
   'last_spreads_bps', 'latest_rates', 'custom', 'source_file',
   // Internal tracking fields — too verbose or redundant to show in stats bar
-  'paused_symbols', 'mismatch_counts',
+  'paused_symbols', 'mismatch_counts', 'inventory',
   'legs', 'basis_history',
   // Already shown in global risk panel
   'halted', 'halt_reason', 'consecutive_losses',
@@ -609,6 +609,20 @@ function StrategyCard({ strategy, onToggle, onParamChange, onDelete, onEdit, t, 
               </div>
             </div>
           )}
+          {strategy.inventory && Object.entries(strategy.inventory).map(([ex, inv]) => (
+            <div key={ex}>
+              <div style={{ fontSize: 9, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
+                {ex} inventory
+              </div>
+              <div className="num" style={{ fontSize: 11, color: 'var(--t1)' }}>
+                {Object.entries(inv).filter(([k]) => k !== 'age_s').map(([ccy, amt]) => (
+                  <span key={ccy} style={{ marginRight: 8, color: amt === 0 ? 'var(--red)' : undefined }}>
+                    {ccy} {ccy === 'USDT' ? amt.toFixed(1) : amt.toFixed(5)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

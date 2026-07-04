@@ -120,6 +120,14 @@ class SpreadArbStrategy(BaseStrategy):
         self._paused_symbols:  set[str] = set()
         self._perm_warned:     set[str] = set()  # symbols already warned about no-trade keys
 
+        # Spot inventory cache: an arb needs quote ccy on the buy exchange AND
+        # base ccy on the sell exchange. Refreshed in the background when the
+        # spread approaches the threshold, checked (fail-open) before placing.
+        self._bal:            dict[Exchange, dict[str, Decimal]] = {}
+        self._bal_ts:         dict[Exchange, float] = {}
+        self._bal_refreshing: set[Exchange] = set()
+        self._inv_warn_ts:    dict[str, float] = {}
+
         # Stats
         self._arb_count     = 0
         self._mismatch_total = 0
@@ -240,6 +248,12 @@ class SpreadArbStrategy(BaseStrategy):
         best_spread = max(spread_bn_over_okx, spread_okx_over_bn)
         self._last_spread_bps[symbol] = best_spread
 
+        # Warm the balance cache while the spread is approaching the threshold so
+        # the inventory check at trigger time reads a fresh cache instead of
+        # adding a REST round-trip to the latency-critical placement path.
+        if best_spread >= threshold * Decimal("0.7"):
+            self._refresh_balances_soon(Exchange.BINANCE_SPOT, Exchange.OKX_SPOT)
+
         # ── Spread persistence: require N consecutive ticks above threshold ────
         confirm_needed = int(self.params.get("spread_confirm_ticks", 2))
         if best_spread >= threshold:
@@ -305,6 +319,19 @@ class SpreadArbStrategy(BaseStrategy):
                     f"{', '.join(no_trade)} (fix key permissions; "
                     f"warning logged once per symbol)"
                 )
+            return
+
+        # Inventory check (fail-open on stale/missing cache): the buy leg locks
+        # quote ccy, the sell leg locks base ccy — with either missing, the
+        # exchange rejects the leg and we'd burn a mismatch on a known outcome.
+        inv_ok, inv_why = self._inventory_ok(
+            symbol, buy_ex, buy_qty, buy_price, sell_ex, sell_qty)
+        if not inv_ok:
+            now_w = time.time()
+            if now_w - self._inv_warn_ts.get(symbol, 0) > 300:
+                self._inv_warn_ts[symbol] = now_w
+                logger.warning(f"Arb [{symbol}] skipped — insufficient inventory: {inv_why}")
+            self._refresh_balances_soon(buy_ex, sell_ex)  # re-check with fresh data next time
             return
 
         timeout = self.params["leg_timeout_s"]
@@ -652,6 +679,73 @@ class SpreadArbStrategy(BaseStrategy):
             for leg in arb.legs:
                 self._order_to_leg.pop(leg.order_id, None)
 
+    # ── Spot inventory cache ──────────────────────────────────────────────────
+
+    _BAL_REFRESH_S = 60.0   # min seconds between refreshes per exchange
+    _BAL_FRESH_S   = 180.0  # cache older than this → fail open (don't block)
+
+    def _refresh_balances_soon(self, *exchanges: Exchange) -> None:
+        """Fire-and-forget balance refresh, throttled per exchange."""
+        if not self.engine or self._is_backtest():
+            return
+        now = time.time()
+        for ex in exchanges:
+            if ex in self._bal_refreshing:
+                continue
+            if now - self._bal_ts.get(ex, 0) < self._BAL_REFRESH_S:
+                continue
+            conn = getattr(self.engine, "connectors", {}).get(ex)
+            if conn is None or not hasattr(conn, "get_balances"):
+                continue
+            self._bal_refreshing.add(ex)
+            try:
+                asyncio.get_running_loop().create_task(self._do_refresh_balances(ex, conn))
+            except RuntimeError:
+                self._bal_refreshing.discard(ex)  # no loop (sync test context)
+
+    async def _do_refresh_balances(self, ex: Exchange, conn) -> None:
+        try:
+            rows = await conn.get_balances()
+            self._bal[ex] = {b.asset: b.free for b in rows}
+            self._bal_ts[ex] = time.time()
+        except Exception as e:
+            logger.debug(f"Balance refresh failed [{ex.value}]: {e}")
+        finally:
+            self._bal_refreshing.discard(ex)
+
+    def _inventory_ok(
+        self, symbol: str,
+        buy_ex: Exchange, buy_qty: Decimal, buy_price: Decimal,
+        sell_ex: Exchange, sell_qty: Decimal,
+    ) -> tuple[bool, str]:
+        """True unless a FRESH balance snapshot shows a leg can't be funded.
+
+        Stale/absent cache → (True, "") — never block a trade on missing data;
+        the exchange's own rejection (now with sMsg detail) is the backstop.
+        Backtest: the sim connector models a net position (shorting a spot leg
+        is allowed), so real-world inventory constraints don't apply."""
+        if self._is_backtest():
+            return True, ""
+        base, _, quote = symbol.partition("-")
+        margin = Decimal("1.01")
+        now = time.time()
+
+        if buy_ex.value.endswith("_spot") and now - self._bal_ts.get(buy_ex, 0) < self._BAL_FRESH_S:
+            need = buy_qty * buy_price * margin
+            have = self._bal.get(buy_ex, {}).get(quote, Decimal("0"))
+            if have < need:
+                return False, (f"{buy_ex.value} has {have:.2f} {quote}, "
+                               f"buy leg needs {need:.2f}")
+
+        if sell_ex.value.endswith("_spot") and now - self._bal_ts.get(sell_ex, 0) < self._BAL_FRESH_S:
+            need = sell_qty * margin
+            have = self._bal.get(sell_ex, {}).get(base, Decimal("0"))
+            if have < need:
+                return False, (f"{sell_ex.value} has {have} {base}, "
+                               f"sell leg needs {need:.6f}")
+
+        return True, ""
+
     def on_params_updated(self, changed: dict) -> None:
         self._paused_symbols.clear()
         self._mismatch_count.clear()
@@ -694,4 +788,20 @@ class SpreadArbStrategy(BaseStrategy):
             "mismatch_counts":      dict(self._mismatch_count),
             "total_mismatches":     self._mismatch_total,
             "latest_rates":         {},
+            "inventory":            self._inventory_snapshot(),
         }
+
+    def _inventory_snapshot(self) -> dict:
+        """Relevant free balances per exchange for the card: quote + traded bases."""
+        # Bases come from symbols actually observed on the feed (strategy has no
+        # symbols param — it trades whatever the engine subscribes).
+        bases = {s.partition("-")[0] for s in self._last_spread_bps} or {"BTC", "ETH"}
+        out: dict[str, dict] = {}
+        now = time.time()
+        for ex, bal in self._bal.items():
+            entry = {"USDT": float(bal.get("USDT", 0))}
+            for b in sorted(bases):
+                entry[b] = float(bal.get(b, 0))
+            entry["age_s"] = round(now - self._bal_ts.get(ex, now), 1)
+            out[ex.value] = entry
+        return out
