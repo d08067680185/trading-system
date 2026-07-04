@@ -308,3 +308,21 @@ def test_cancel_race_completes_instead_of_hedging():
     assert not [p for p in eng.placed if p["reduce_only"]]   # completed, no hedge
     assert "BTC-USDT" not in s._open_arbs
     assert s._mismatch_total == 0             # clean completion, not a mismatch
+
+def test_arb_skipped_when_key_cannot_trade():
+    """Known-bad API key on either leg's exchange → skip before placing anything."""
+    eng = _FakeEngine()
+    eng.trade_permissions = {"binance_spot": {"ok": False, "detail": "401 -2015"}}
+    s = _arb(eng)
+    _feed_arb_open(s)
+    assert eng.placed == []          # neither leg placed
+    assert s._mismatch_count == {}   # no mismatch penalty for an unexecutable arb
+
+
+def test_arb_proceeds_when_perms_ok():
+    eng = _FakeEngine()
+    eng.trade_permissions = {"binance_spot": {"ok": True, "detail": "canTrade=true"},
+                             "okx_spot": {"ok": True, "detail": "perm=trade"}}
+    s = _arb(eng)
+    _feed_arb_open(s)
+    assert len(eng.placed) == 2

@@ -108,3 +108,49 @@ def test_strategy_rests_orders_flag():
     e.strategies.append(grid)
     assert e._strategy_rests_orders("grid1") is True
     assert e._strategy_rests_orders("unknown") is False
+
+
+# ── Trade-permission gate in _execute_signal ─────────────────────────────────
+
+def test_permission_gate_blocks_order():
+    import asyncio
+    from core.types import Signal, OrderType
+
+    e = _engine()
+    e.trade_permissions = {"binance_spot": {"ok": False, "detail": "401 -2015"}}
+
+    class _NeverConnector:
+        async def place_order(self, **kw):
+            raise AssertionError("must not reach the exchange")
+    e.connectors[Exchange.BINANCE_SPOT] = _NeverConnector()
+
+    sig = Signal(exchange=Exchange.BINANCE_SPOT, symbol="ETH-USDT",
+                 side=OrderSide.BUY, order_type=OrderType.MARKET,
+                 quantity=Decimal("0.01"), strategy_id="t")
+    assert asyncio.run(e._execute_signal(sig)) is None
+
+
+def test_permission_gate_allows_reduce_only_through():
+    """Exit attempts must never be blocked locally — let the exchange decide."""
+    import asyncio
+    from core.types import Signal, OrderType, Order, OrderStatus
+
+    e = _engine()
+    e.config.engine.max_quote_age_s = 0  # disable staleness for this test
+    e.trade_permissions = {"binance_spot": {"ok": False, "detail": "401"}}
+
+    placed = {}
+
+    class _Conn:
+        async def place_order(self, **kw):
+            placed.update(kw)
+            return Order(exchange=Exchange.BINANCE_SPOT, symbol=kw["symbol"],
+                         side=kw["side"], order_type=kw["order_type"],
+                         quantity=kw["quantity"], status=OrderStatus.FILLED)
+    e.connectors[Exchange.BINANCE_SPOT] = _Conn()
+
+    sig = Signal(exchange=Exchange.BINANCE_SPOT, symbol="ETH-USDT",
+                 side=OrderSide.SELL, order_type=OrderType.MARKET,
+                 quantity=Decimal("0.01"), reduce_only=True, strategy_id="t")
+    order = asyncio.run(e._execute_signal(sig))
+    assert order is not None and placed.get("symbol") == "ETH-USDT"

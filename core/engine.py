@@ -603,6 +603,20 @@ class TradingEngine:
             await _db_warn(reason)
             return None
 
+        # Trade-permission gate: the probe says this key can't trade (read-only
+        # key, IP whitelist, missing Spot & Margin permission…). Reject with the
+        # real reason instead of burning a round-trip on a guaranteed 401.
+        # reduce_only passes through — never locally block an exit attempt.
+        perm = self.trade_permissions.get(signal.exchange.value)
+        if perm and not perm.get("ok", True) and not signal.reduce_only:
+            reason = (
+                f"Order blocked: API key can't trade on {signal.exchange.value} "
+                f"— {perm.get('detail', 'permission check failed')}"
+            )
+            self.logger.warning(reason)
+            await _db_warn(reason)
+            return None
+
         # Staleness guard: never open/increase on a frozen quote (e.g. WS stalled).
         # Risk-reducing orders (reduce_only) are allowed through so we can always exit.
         if not signal.reduce_only:

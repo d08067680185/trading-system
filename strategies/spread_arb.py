@@ -118,6 +118,7 @@ class SpreadArbStrategy(BaseStrategy):
         # Mismatch counters per symbol
         self._mismatch_count:  dict[str, int] = {}
         self._paused_symbols:  set[str] = set()
+        self._perm_warned:     set[str] = set()  # symbols already warned about no-trade keys
 
         # Stats
         self._arb_count     = 0
@@ -287,6 +288,25 @@ class SpreadArbStrategy(BaseStrategy):
         """Place both legs directly via engine; register in leg tracker."""
         if not self.engine:
             return
+
+        # If either exchange's API key is known to be unable to trade, the arb
+        # is unexecutable — skip before placing anything so we don't burn the
+        # good leg (place + cancel) and mismatch counts on a guaranteed failure.
+        perms = getattr(self.engine, "trade_permissions", {}) or {}
+        no_trade = [
+            ex.value for ex in (buy_ex, sell_ex)
+            if perms.get(ex.value) and not perms[ex.value].get("ok", True)
+        ]
+        if no_trade:
+            if symbol not in self._perm_warned:
+                self._perm_warned.add(symbol)
+                logger.warning(
+                    f"Arb [{symbol}] skipped — API key can't trade on "
+                    f"{', '.join(no_trade)} (fix key permissions; "
+                    f"warning logged once per symbol)"
+                )
+            return
+
         timeout = self.params["leg_timeout_s"]
         maker_both = self.params.get("maker_both_legs", True)
         if maker_both:
@@ -635,6 +655,7 @@ class SpreadArbStrategy(BaseStrategy):
     def on_params_updated(self, changed: dict) -> None:
         self._paused_symbols.clear()
         self._mismatch_count.clear()
+        self._perm_warned.clear()
         logger.info("arb_spread params updated — paused symbols and mismatch counts reset")
 
     def _record_mismatch(self, symbol: str) -> None:

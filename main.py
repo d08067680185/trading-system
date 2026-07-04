@@ -523,7 +523,8 @@ async def main() -> None:
     # A read-only key / IP-whitelist mismatch passes every market-data check and
     # only fails at order time (e.g. Binance -2015), silently killing strategies
     # that look healthy. Probe each connector's real permissions at startup and
-    # hourly; the health monitor turns failures into critical + Telegram alerts.
+    # every 10 min (so a fixed key re-enables trading without a restart); the
+    # health monitor turns failures into critical + Telegram alerts.
     async def _probe_trade_permissions():
         await asyncio.sleep(10)  # let connectors finish connecting
         while True:
@@ -543,7 +544,7 @@ async def main() -> None:
                 else:
                     logger.info(f"Trade permission OK [{ex.value}]: {detail}")
             engine.trade_permissions = results
-            await asyncio.sleep(3600)
+            await asyncio.sleep(600)
 
     asyncio.create_task(_probe_trade_permissions())
 
