@@ -123,6 +123,7 @@ class HealthMonitor:
         loop_lag_s: float,
         queue_size: int,
         queue_max: int,
+        trade_perms: Optional[dict[str, dict]] = None,
     ) -> dict:
         """Build a health report from an explicit snapshot of system state.
 
@@ -223,6 +224,23 @@ class HealthMonitor:
             "metrics": {"size": queue_size, "max": queue_max, "pct": round(q_pct, 3)},
         })
 
+        # ── API-key trade permission (only when the probe has run) ──────────
+        if trade_perms:
+            bad = sorted(ex for ex, v in trade_perms.items() if not v.get("ok", True))
+            if not active:
+                tp_status, tp_detail = "idle", "engine paused"
+            elif bad:
+                tp_status = "critical"
+                reasons = "; ".join(
+                    f"{ex}: {trade_perms[ex].get('detail', '?')}" for ex in bad)
+                tp_detail = f"orders will be rejected — {reasons}"
+            else:
+                tp_status, tp_detail = "ok", "all keys can trade"
+            components.append({
+                "name": "trade_permission", "status": tp_status, "detail": tp_detail,
+                "metrics": {"exchanges": dict(trade_perms)},
+            })
+
         # ── Overall ─────────────────────────────────────────────────────────
         if not active:
             overall = "paused"
@@ -254,6 +272,7 @@ class HealthMonitor:
             loop_lag_s=self._loop_lag_s,
             queue_size=qsize,
             queue_max=qmax,
+            trade_perms=getattr(eng, "trade_permissions", None) or None,
         )
 
     def _feed_ages(self) -> dict[str, Optional[float]]:

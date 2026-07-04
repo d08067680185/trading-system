@@ -348,3 +348,52 @@ def test_no_duplicate_alert_while_status_unchanged():
 
     asyncio.run(scenario())
     assert len([s for s in eng._notifier.sent if "DEGRADED" in s]) == 1
+
+
+# ── Trade-permission component ────────────────────────────────────────────────
+
+def test_trade_perm_failure_is_critical():
+    r = _mon().evaluate(
+        active=True,
+        connector_states={"binance_spot": "connected", "okx_spot": "connected"},
+        feed_ages={"binance_spot": 1.0, "okx_spot": 1.0},
+        loop_lag_s=0.0, queue_size=0, queue_max=10000,
+        trade_perms={
+            "binance_spot": {"ok": False, "detail": "401 -2015 invalid key/IP/permissions"},
+            "okx_spot": {"ok": True, "detail": "perm=read_only,trade"},
+        },
+    )
+    assert r["status"] == "critical"
+    tp = next(c for c in r["components"] if c["name"] == "trade_permission")
+    assert tp["status"] == "critical"
+    assert "binance_spot" in tp["detail"]
+    assert "-2015" in tp["detail"]
+
+
+def test_trade_perm_all_ok_and_absent():
+    ok = _mon().evaluate(
+        active=True, connector_states={"okx_spot": "connected"},
+        feed_ages={"okx_spot": 1.0}, loop_lag_s=0.0,
+        queue_size=0, queue_max=10000,
+        trade_perms={"okx_spot": {"ok": True, "detail": "perm=trade"}},
+    )
+    assert ok["status"] == "ok"
+    tp = next(c for c in ok["components"] if c["name"] == "trade_permission")
+    assert tp["status"] == "ok"
+
+    # Probe not run yet → component absent, nothing breaks
+    absent = _mon().evaluate(
+        active=True, connector_states={"okx_spot": "connected"},
+        feed_ages={"okx_spot": 1.0}, loop_lag_s=0.0,
+        queue_size=0, queue_max=10000,
+    )
+    assert all(c["name"] != "trade_permission" for c in absent["components"])
+
+
+def test_trade_perm_snapshot_reads_engine_attr():
+    eng = _StubEngine(states={"binance_spot": "connected"},
+                      last_ticker={("binance_spot", "BTC-USDT"): (0, 0, 0, time.time())})
+    eng.trade_permissions = {"binance_spot": {"ok": False, "detail": "canTrade=false"}}
+    r = _mon(eng).snapshot()
+    assert r["status"] == "critical"
+    assert any(c["name"] == "trade_permission" for c in r["components"])

@@ -334,7 +334,18 @@ class OKXConnector(BaseConnector):
                         await asyncio.sleep(2 ** attempt)
                         continue
                     if data.get("code") != "0":
-                        raise RuntimeError(f"OKX {method} {path}: {data.get('code')} {data.get('msg')}")
+                        # Batch-style endpoints (e.g. /trade/order) bury the real
+                        # reason in data[0].sMsg; top-level msg is just
+                        # "All operations failed".
+                        detail = ""
+                        rows = data.get("data") or []
+                        if rows and isinstance(rows[0], dict):
+                            s_code = rows[0].get("sCode")
+                            s_msg = rows[0].get("sMsg")
+                            if s_code or s_msg:
+                                detail = f" [{s_code}: {s_msg}]"
+                        raise RuntimeError(
+                            f"OKX {method} {path}: {data.get('code')} {data.get('msg')}{detail}")
                     return data
             except RuntimeError:
                 raise
@@ -522,6 +533,19 @@ class OKXConnector(BaseConnector):
                     locked=Decimal(detail.get("frozenBal", "0")),
                 ))
         return balances
+
+    async def probe_trade_permission(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "no API key configured"
+        try:
+            data = await self._request("GET", "/api/v5/account/config")
+            rows = data.get("data") or [{}]
+            perm = str(rows[0].get("perm", ""))
+            if perm and "trade" not in perm.split(","):
+                return False, f"key permissions '{perm}' lack trade"
+            return True, f"perm={perm or 'unknown'}"
+        except Exception as e:
+            return False, str(e)
 
     async def get_funding_rates(self, symbols: Optional[list[str]] = None) -> list[dict]:
         """Return current funding rates. OKX requires per-instrument queries (no bulk endpoint)."""

@@ -519,6 +519,34 @@ async def main() -> None:
     health_monitor.set_broadcast(ws_manager.broadcast)
     logger.info("Quant modules initialized")
 
+    # ── API-key trade-permission probe ────────────────────────────────────────
+    # A read-only key / IP-whitelist mismatch passes every market-data check and
+    # only fails at order time (e.g. Binance -2015), silently killing strategies
+    # that look healthy. Probe each connector's real permissions at startup and
+    # hourly; the health monitor turns failures into critical + Telegram alerts.
+    async def _probe_trade_permissions():
+        await asyncio.sleep(10)  # let connectors finish connecting
+        while True:
+            results: dict[str, dict] = {}
+            for ex, conn in list(engine.connectors.items()):
+                if engine._connector_states.get(ex.value) != "connected":
+                    continue  # down/manually-disconnected exchanges are already surfaced
+                try:
+                    ok, detail = await conn.probe_trade_permission()
+                except Exception as e:
+                    ok, detail = False, str(e)
+                results[ex.value] = {"ok": ok, "detail": detail}
+                if not ok:
+                    logger.critical(
+                        f"Trade permission FAILED [{ex.value}]: {detail} "
+                        f"— orders on this exchange will be rejected")
+                else:
+                    logger.info(f"Trade permission OK [{ex.value}]: {detail}")
+            engine.trade_permissions = results
+            await asyncio.sleep(3600)
+
+    asyncio.create_task(_probe_trade_permissions())
+
     # ── Periodic DB backup (every 6 hours) ────────────────────────────────────
     async def _backup_loop():
         while True:

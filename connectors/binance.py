@@ -639,6 +639,30 @@ class BinanceConnector(BaseConnector):
             locked=Decimal(b["locked"]),
         ) for b in data.get("balances", []) if Decimal(b["free"]) + Decimal(b["locked"]) > 0]
 
+    async def probe_trade_permission(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "no API key configured"
+        try:
+            if self.market_type == MarketType.FUTURES:
+                if self.portfolio_margin:
+                    # PAPI has no canTrade flag; a successful signed call at least
+                    # proves the key + IP whitelist are valid.
+                    await self._request("GET", "/papi/v1/balance", base_url=self._REST_PAPI)
+                    return True, "papi key valid"
+                data = await self._request("GET", "/fapi/v2/account")
+                if not data.get("canTrade", True):
+                    return False, "canTrade=false on futures account"
+                return True, "canTrade=true"
+            data = await self._request("GET", "/api/v3/account")
+            if not data.get("canTrade", True):
+                return False, "canTrade=false — enable 'Spot & Margin Trading' on this API key"
+            perms = data.get("permissions") or []
+            if perms and "SPOT" not in perms:
+                return False, f"SPOT not in key permissions {perms}"
+            return True, "canTrade=true"
+        except Exception as e:
+            return False, str(e)
+
     async def get_funding_rates(self) -> list[dict]:
         """Return current funding rates for all futures symbols."""
         if self.market_type != MarketType.FUTURES:

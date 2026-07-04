@@ -33,6 +33,9 @@ class TradingEngine:
         self._sim_time: Optional[float] = None
         self._start_time: float = 0.0
         self._connector_states: dict[str, str] = {}  # exchange → "connected"|"disconnected"|"error"
+        # Filled by the startup trade-permission probe (main._probe_trade_permissions):
+        # exchange value → {"ok": bool, "detail": str}. Health monitor surfaces failures.
+        self.trade_permissions: dict[str, dict] = {}
         # Exchanges the operator disconnected on purpose — the health monitor's
         # auto-heal must NOT reconnect these (it would fight a deliberate action).
         self._manually_disconnected: set[Exchange] = set()

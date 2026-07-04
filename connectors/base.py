@@ -186,6 +186,16 @@ class BaseConnector(ABC):
     @abstractmethod
     async def set_leverage(self, symbol: str, leverage: int) -> None: ...
 
+    async def probe_trade_permission(self) -> tuple[bool, str]:
+        """Check that the configured API key can actually TRADE, not just read.
+
+        A key with read-only permission (or an IP-whitelist mismatch) passes
+        market-data checks and only fails at order time — silently killing a
+        strategy that looks healthy. Connectors override this with a cheap
+        authenticated call that reports the key's real permissions.
+        Returns (ok, detail). Default: unknown → assume OK."""
+        return True, "not checked"
+
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _quantize_order(
