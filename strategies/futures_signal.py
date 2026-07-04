@@ -420,8 +420,16 @@ class FuturesSignalStrategy(BaseStrategy):
                 )
             else:
                 rsi_str = f" rsi={self._last_rsi:.1f}" if self._last_rsi else ""
-                _rm = getattr(getattr(self, "engine", None), "risk_manager", None)
-                _reason = getattr(_rm, "last_block_reason", "") or "unknown"
+                # Prefer the trade-permission probe's verdict — risk_manager's
+                # last_block_reason may be stale when the engine gate rejected first.
+                _eng = getattr(self, "engine", None)
+                _perm = (getattr(_eng, "trade_permissions", {}) or {}).get(
+                    self._exchange().value)
+                if _perm and not _perm.get("ok", True):
+                    _reason = f"API key can't trade: {_perm.get('detail', '')}"
+                else:
+                    _rm = getattr(_eng, "risk_manager", None)
+                    _reason = getattr(_rm, "last_block_reason", "") or "unknown"
                 self.logger.warning(
                     f"[FuturesSignal] Order blocked/rejected: {side} @{price:.2f} qty={qty}"
                     f" exchange={self._exchange().value}{rsi_str} reason={_reason}"

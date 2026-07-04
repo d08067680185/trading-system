@@ -397,3 +397,35 @@ def test_trade_perm_snapshot_reads_engine_attr():
     r = _mon(eng).snapshot()
     assert r["status"] == "critical"
     assert any(c["name"] == "trade_permission" for c in r["components"])
+
+
+# ── Alerting-channel component ────────────────────────────────────────────────
+
+def test_alerting_unconfigured_is_degraded():
+    r = _mon().evaluate(
+        active=True, connector_states={"okx_spot": "connected"},
+        feed_ages={"okx_spot": 1.0}, loop_lag_s=0.0,
+        queue_size=0, queue_max=10000,
+        alerting_enabled=False,
+    )
+    assert r["status"] == "degraded"
+    al = next(c for c in r["components"] if c["name"] == "alerting")
+    assert al["status"] == "degraded"
+    assert "not configured" in al["detail"].lower() or "NOT delivered" in al["detail"]
+
+
+def test_alerting_enabled_is_ok_and_absent_when_unknown():
+    ok = _mon().evaluate(
+        active=True, connector_states={"okx_spot": "connected"},
+        feed_ages={"okx_spot": 1.0}, loop_lag_s=0.0,
+        queue_size=0, queue_max=10000,
+        alerting_enabled=True,
+    )
+    assert ok["status"] == "ok"
+
+    absent = _mon().evaluate(
+        active=True, connector_states={"okx_spot": "connected"},
+        feed_ages={"okx_spot": 1.0}, loop_lag_s=0.0,
+        queue_size=0, queue_max=10000,
+    )
+    assert all(c["name"] != "alerting" for c in absent["components"])

@@ -124,6 +124,7 @@ class HealthMonitor:
         queue_size: int,
         queue_max: int,
         trade_perms: Optional[dict[str, dict]] = None,
+        alerting_enabled: Optional[bool] = None,
     ) -> dict:
         """Build a health report from an explicit snapshot of system state.
 
@@ -241,6 +242,20 @@ class HealthMonitor:
                 "metrics": {"exchanges": dict(trade_perms)},
             })
 
+        # ── Alert channel (Telegram) ─────────────────────────────────────────
+        # A live-money system with no working alert channel fails silently:
+        # halts, margin calls and this monitor's own criticals go nowhere.
+        # Degraded (not critical) — trading still works, the operator is blind.
+        if alerting_enabled is not None:
+            components.append({
+                "name": "alerting",
+                "status": "ok" if alerting_enabled else "degraded",
+                "detail": ("Telegram alerts active" if alerting_enabled else
+                           "Telegram not configured — alerts are NOT delivered "
+                           "(set it up in System → Notifications)"),
+                "metrics": {"telegram_enabled": alerting_enabled},
+            })
+
         # ── Overall ─────────────────────────────────────────────────────────
         if not active:
             overall = "paused"
@@ -273,6 +288,10 @@ class HealthMonitor:
             queue_size=qsize,
             queue_max=qmax,
             trade_perms=getattr(eng, "trade_permissions", None) or None,
+            alerting_enabled=(
+                notifier.enabled if (notifier := getattr(eng, "_notifier", None))
+                is not None and hasattr(notifier, "enabled") else False
+            ),
         )
 
     def _feed_ages(self) -> dict[str, Optional[float]]:
