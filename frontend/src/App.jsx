@@ -42,6 +42,38 @@ export default function App() {
   )
 }
 
+/** Persistent top banner while system health is degraded/critical.
+ *  Toasts fire only on transitions — this reflects the CURRENT state so a
+ *  broken API key or dead feed is visible on every page, not just System. */
+function HealthBanner({ health, onClick, t }) {
+  const critical = health.status === 'critical'
+  const bad = (health.components || []).filter(c => c.status === 'critical' || c.status === 'degraded')
+  const summary = bad.map(c => `${c.name}: ${c.detail}`).join('  ·  ')
+  return (
+    <div
+      onClick={onClick}
+      title={t('health_banner_hint')}
+      style={{
+        padding: '6px 16px', cursor: 'pointer', fontSize: 12, lineHeight: 1.5,
+        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+        background: critical ? 'rgba(220,60,60,0.14)' : 'rgba(240,185,11,0.12)',
+        borderBottom: `1px solid ${critical ? 'var(--red)' : '#f0b90b'}`,
+        color: critical ? 'var(--red)' : '#f0b90b',
+      }}
+    >
+      <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+        {critical ? '🚨' : '⚠️'} {critical ? t('health_banner_critical') : t('health_banner_degraded')}
+      </span>
+      <span style={{
+        color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+      }}>
+        {summary}
+      </span>
+      <span style={{ whiteSpace: 'nowrap', color: 'var(--t2)' }}>{t('health_banner_hint')} →</span>
+    </div>
+  )
+}
+
 function AppContent() {
   const { t } = useLang()
   const [page, setPage]               = useState('dashboard')
@@ -60,6 +92,7 @@ function AppContent() {
   const [toasts, setToasts]           = useState([])
   const [equityRefresh, setEquityRefresh] = useState(0)
   const [regimes, setRegimes]         = useState({})   // symbol → regime snapshot
+  const [health, setHealth]           = useState(null) // /health/detail report
   const wsRef = useRef(null)
   const equityRefreshTimeRef = useRef(0)
   const regimeToastTimeRef = useRef({})  // symbol → last toast timestamp
@@ -76,9 +109,10 @@ function AppContent() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [posData, balData, riskData, stratData, statusData, settingsData] = await Promise.allSettled([
+      const [posData, balData, riskData, stratData, statusData, settingsData, healthData] = await Promise.allSettled([
         apiFetch('/positions'), apiFetch('/balances'), apiFetch('/risk'),
         apiFetch('/strategies'), apiFetch('/status'), apiFetch('/settings'),
+        apiFetch('/health/detail'),
       ])
       if (posData.status === 'fulfilled') {
         const map = {}
@@ -91,6 +125,8 @@ function AppContent() {
       if (statusData.status === 'fulfilled') setStatus(statusData.value)
       if (settingsData.status === 'fulfilled' && settingsData.value?.engine?.symbols)
         setSymbols(settingsData.value.engine.symbols)
+      if (healthData.status === 'fulfilled' && healthData.value?.status)
+        setHealth(healthData.value)
     } catch (e) { console.error('Load failed:', e) }
   }, [])
 
@@ -203,6 +239,7 @@ function AppContent() {
           }
           break
         case 'health_update': {
+          if (msg.data?.status) setHealth(msg.data)
           const st = msg.data?.status
           const bad = (msg.data?.components || []).filter(c => c.status === 'degraded' || c.status === 'critical')
           const detail = bad.map(c => `${c.name}: ${c.detail}`).join('\n')
@@ -285,6 +322,10 @@ function AppContent() {
             onResume={handleResume}
             onMenuToggle={() => setSidebarOpen(o => !o)}
           />
+
+          {health && (health.status === 'critical' || health.status === 'degraded') && (
+            <HealthBanner health={health} onClick={() => navigate('system')} t={t} />
+          )}
 
           <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
             <Suspense fallback={<div style={{ padding: 40, color: 'var(--t2)', fontSize: 13 }}>Loading…</div>}>

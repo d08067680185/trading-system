@@ -299,8 +299,13 @@ const T = {
     toast_health_degraded: 'System Health: Degraded',
     toast_health_ok: 'System Health Recovered',
     toast_health_ok_msg: 'All components back to OK',
+    health_banner_critical: 'SYSTEM CRITICAL',
+    health_banner_degraded: 'System degraded',
+    health_banner_hint: 'View details',
 
     // Strategies page
+    arb_trigger_history: 'Recent arb triggers',
+    arb_no_triggers: 'No triggers recorded yet',
     comp_tool_badge: 'Competition',
     comp_symbol_label: 'Symbol',
     comp_amount_label: 'Amount/cycle (USDT)',
@@ -770,8 +775,13 @@ const T = {
     toast_health_degraded: '系统健康：降级',
     toast_health_ok: '系统健康已恢复',
     toast_health_ok_msg: '所有组件已恢复正常',
+    health_banner_critical: '系统严重异常',
+    health_banner_degraded: '系统降级',
+    health_banner_hint: '查看详情',
 
     // Strategies page
+    arb_trigger_history: '最近套利触发',
+    arb_no_triggers: '暂无触发记录',
     comp_tool_badge: '竞赛工具',
     comp_symbol_label: '交易对',
     comp_amount_label: '每次金额 (USDT)',

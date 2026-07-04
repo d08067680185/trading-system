@@ -461,6 +461,72 @@ function StrategyPnLChart({ strategyId }) {
   )
 }
 
+const OUTCOME_COLORS = {
+  completed: 'var(--green)', place_failed: 'var(--red)',
+  timeout: '#f0b90b', hedged: '#f0b90b', mismatch: 'var(--red)',
+}
+
+function ArbTriggerHistory({ t }) {
+  const [open, setOpen] = useState(false)
+  const [rows, setRows] = useState(null)
+
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    const key = getApiKey()
+    const load = () =>
+      fetch('/api/arb-triggers?limit=12', { headers: key ? { 'X-API-Key': key } : {} })
+        .then(r => r.json())
+        .then(d => { if (alive) setRows(Array.isArray(d) ? d : []) })
+        .catch(() => {})
+    load()
+    const iv = setInterval(load, 30000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [open])
+
+  const sorted = (rows || []).slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 10)
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)', padding: '6px 20px' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+          fontSize: 10, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '0.06em',
+        }}
+      >
+        {open ? '▾' : '▸'} {t('arb_trigger_history')}
+      </button>
+      {open && (
+        <div style={{ marginTop: 6 }}>
+          {sorted.length === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--t2)', padding: '4px 0' }}>{t('arb_no_triggers')}</div>
+          )}
+          {sorted.map((r, i) => {
+            const ts = r.timestamp ? new Date(r.timestamp * 1000) : null
+            const when = ts ? `${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')} ${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}` : '—'
+            return (
+              <div key={r.id ?? i} style={{ display: 'flex', gap: 12, fontSize: 11, padding: '2px 0', alignItems: 'baseline' }}>
+                <span className="num" style={{ color: 'var(--t2)', whiteSpace: 'nowrap' }}>{when}</span>
+                <span style={{ fontWeight: 600, minWidth: 62 }}>{r.symbol}</span>
+                <span className="num" style={{ minWidth: 55 }}>{Number(r.spread_bps ?? 0).toFixed(1)} bps</span>
+                <span style={{ color: OUTCOME_COLORS[r.outcome] || 'var(--t2)', fontWeight: 600 }}>
+                  {r.outcome || 'open'}
+                </span>
+                {r.pnl != null && (
+                  <span className="num" style={{ color: r.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {r.pnl >= 0 ? '+' : ''}{Number(r.pnl).toFixed(4)}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StrategyCard({ strategy, onToggle, onParamChange, onDelete, onEdit, t, lang }) {
   const [expanded, setExpanded] = useState(false)
   const isActive = strategy.enabled
@@ -625,6 +691,8 @@ function StrategyCard({ strategy, onToggle, onParamChange, onDelete, onEdit, t, 
           ))}
         </div>
       )}
+
+      {strategy.id === 'arb_spread' && isActive && <ArbTriggerHistory t={t} />}
 
       {/* Live stats bar — grid layout, labels row + values row, horizontally scrollable */}
       {isActive && (() => {
