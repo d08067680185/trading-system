@@ -250,16 +250,16 @@ class OKXConnector(BaseConnector):
                     await self._wait_login_ack(ws)
                     self._priv_auth_warned = False
                     self.logger.info("OKX private WS authenticated — live order/position push active")
-                    # Subscribe to orders and positions
+                    # Subscribe to orders (+ positions for derivatives; the
+                    # positions channel doesn't exist for SPOT → 60018).
                     inst_type = "SWAP" if self.market_type == MarketType.SWAP else "SPOT"
-                    await ws.send(json.dumps({
-                        "op": "subscribe",
-                        "args": [
-                            {"channel": "orders", "instType": inst_type},
-                            {"channel": "positions", "instType": inst_type},
-                            {"channel": "account"},
-                        ],
-                    }))
+                    args = [
+                        {"channel": "orders", "instType": inst_type},
+                        {"channel": "account"},
+                    ]
+                    if self.market_type == MarketType.SWAP:
+                        args.insert(1, {"channel": "positions", "instType": inst_type})
+                    await ws.send(json.dumps({"op": "subscribe", "args": args}))
                     async for raw in ws:
                         await self._handle_priv_message(json.loads(raw))
             except websockets.exceptions.ConnectionClosed as e:
