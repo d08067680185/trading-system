@@ -5,6 +5,7 @@ All writes are async via aiosqlite.
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -201,10 +202,32 @@ class DataStorage:
             await self._db.close()
 
     async def backup(self, suffix: str = ".bak") -> str:
-        """Copy the DB file to <path><suffix>. Returns backup path."""
+        """Write a consistent snapshot to <path><suffix>. Returns backup path.
+
+        Uses VACUUM INTO on a separate connection: unlike a file copy of a live
+        WAL-mode DB (which silently drops un-checkpointed WAL content), this
+        produces a consistent, compacted snapshot without stalling the main
+        connection. Falls back to a raw copy if VACUUM INTO fails."""
         src = Path(self._path)
         dst = Path(str(src) + suffix)
-        await asyncio.to_thread(shutil.copy2, str(src), str(dst))
+        tmp = Path(str(dst) + ".tmp")
+
+        def _vacuum_into() -> None:
+            import sqlite3
+            if tmp.exists():
+                tmp.unlink()
+            con = sqlite3.connect(str(src))
+            try:
+                con.execute("VACUUM INTO ?", (str(tmp),))
+            finally:
+                con.close()
+            os.replace(str(tmp), str(dst))
+
+        try:
+            await asyncio.to_thread(_vacuum_into)
+        except Exception as e:
+            logger.warning(f"VACUUM INTO backup failed ({e}); falling back to file copy")
+            await asyncio.to_thread(shutil.copy2, str(src), str(dst))
         logger.info(f"DB backup written: {dst}")
         return str(dst)
 

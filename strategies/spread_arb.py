@@ -8,6 +8,7 @@ Key safety features added vs naive dual-signal approach:
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import time
 from decimal import Decimal
@@ -128,6 +129,11 @@ class SpreadArbStrategy(BaseStrategy):
         self._bal_refreshing: set[Exchange] = set()
         self._inv_warn_ts:    dict[str, float] = {}
 
+        # Mismatch/pause state survives restarts (every deploy restarts the
+        # container): without persistence a paused symbol silently resumes
+        # trading after each push. Loaded lazily on first tick.
+        self._state_loaded: bool = False
+
         # Stats
         self._arb_count     = 0
         self._mismatch_total = 0
@@ -142,6 +148,9 @@ class SpreadArbStrategy(BaseStrategy):
     async def on_ticker(self, event: TickerEvent) -> list[Signal]:
         t = event.ticker
         self._tickers[(t.exchange, t.symbol)] = t
+
+        if not self._state_loaded:
+            await self._load_state()
 
         bn  = self._tickers.get((Exchange.BINANCE_SPOT, t.symbol))
         okx = self._tickers.get((Exchange.OKX_SPOT,     t.symbol))
@@ -607,6 +616,7 @@ class SpreadArbStrategy(BaseStrategy):
             f"prices={[str(l.fill_price) for l in arb.legs]}"
         )
         self._mismatch_count[arb.symbol] = 0  # reset on clean completion
+        self._save_state_soon()
         self._finish_trigger(arb, "completed", realized_bps=self._realized_bps(arb))
         self._cleanup_arb(arb.symbol)
 
@@ -752,6 +762,7 @@ class SpreadArbStrategy(BaseStrategy):
         self._paused_symbols.clear()
         self._mismatch_count.clear()
         self._perm_warned.clear()
+        self._save_state_soon()  # persist the reset — must survive a restart too
         logger.info("arb_spread params updated — paused symbols and mismatch counts reset")
 
     def _record_mismatch(self, symbol: str) -> None:
@@ -765,6 +776,54 @@ class SpreadArbStrategy(BaseStrategy):
                 f"PAUSING {symbol} after {count} consecutive leg mismatches "
                 f"(max={max_mm}) — resume via strategy params reset"
             )
+        self._save_state_soon()
+
+    # ── State persistence (survives container restarts / deploys) ────────────
+
+    def _state_key(self) -> str:
+        return f"spread_arb:{self.strategy_id}:state"
+
+    def _storage_for_state(self):
+        if self._is_backtest():
+            return None
+        return getattr(self.engine, "storage", None) if self.engine else None
+
+    async def _load_state(self) -> None:
+        self._state_loaded = True
+        storage = self._storage_for_state()
+        if storage is None:
+            return
+        try:
+            raw = await storage.get_setting(self._state_key())
+            if not raw:
+                return
+            st = json.loads(raw)
+            self._mismatch_count = {k: int(v) for k, v in st.get("mismatch_count", {}).items()}
+            self._paused_symbols = set(st.get("paused_symbols", []))
+            self._mismatch_total = int(st.get("mismatch_total", 0))
+            if self._paused_symbols:
+                logger.warning(
+                    f"Restored paused symbols from DB after restart: "
+                    f"{sorted(self._paused_symbols)} — resume via params update"
+                )
+        except Exception as e:
+            logger.warning(f"State restore failed: {e}")
+
+    def _save_state_soon(self) -> None:
+        """Fire-and-forget persist of the mismatch/pause counters."""
+        storage = self._storage_for_state()
+        if storage is None:
+            return
+        payload = json.dumps({
+            "mismatch_count": dict(self._mismatch_count),
+            "paused_symbols": sorted(self._paused_symbols),
+            "mismatch_total": self._mismatch_total,
+        })
+        try:
+            asyncio.get_running_loop().create_task(
+                storage.set_setting(self._state_key(), payload))
+        except RuntimeError:
+            pass  # no loop (sync test context)
 
     # ── Status ────────────────────────────────────────────────────────────────
 

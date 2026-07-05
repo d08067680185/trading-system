@@ -374,3 +374,40 @@ def test_arb_proceeds_with_sufficient_inventory():
     assert len(eng.placed) == 2
     inv = s.get_status()["inventory"]
     assert inv["okx_spot"]["USDT"] == 100.0 and inv["binance_spot"]["BTC"] == 1.0
+
+def test_arb_state_persists_and_restores():
+    """Mismatch/pause counters must survive a container restart (deploy)."""
+    saved = {}
+
+    class _FakeStorage:
+        async def get_setting(self, key):
+            return saved.get(key)
+        async def set_setting(self, key, value):
+            saved[key] = value
+
+    async def scenario():
+        eng = _FakeEngine()
+        eng.storage = _FakeStorage()
+        s = _arb(eng, max_mismatches=2)
+        s._state_loaded = True  # skip lazy load for the writer instance
+        s._record_mismatch("BTC-USDT")
+        s._record_mismatch("BTC-USDT")   # hits max → paused
+        await asyncio.sleep(0)           # let the save task run
+        assert "BTC-USDT" in s._paused_symbols
+        assert saved, "state was not persisted"
+
+        # New instance (simulated restart) restores the paused state on first tick
+        s2 = _arb(eng, max_mismatches=2)
+        await s2._load_state()
+        assert "BTC-USDT" in s2._paused_symbols
+        assert s2._mismatch_count.get("BTC-USDT") == 2
+        assert s2._mismatch_total == 2
+
+        # Params update clears AND persists the cleared state
+        s2.on_params_updated({"max_mismatches": 5})
+        await asyncio.sleep(0)
+        s3 = _arb(eng, max_mismatches=5)
+        await s3._load_state()
+        assert s3._paused_symbols == set()
+
+    asyncio.run(scenario())
