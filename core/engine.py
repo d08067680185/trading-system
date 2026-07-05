@@ -715,17 +715,22 @@ class TradingEngine:
             return False
         return await connector.cancel_order(symbol, order_id)
 
-    async def ensure_symbol_feed(self, exchange: Exchange, symbol: str) -> bool:
-        """Subscribe the ticker feed for a symbol at runtime.
+    async def ensure_symbol_feed(self, exchange: Exchange, symbol: str,
+                                 with_orderbook: bool = False) -> bool:
+        """Subscribe the ticker (and optionally orderbook) feed at runtime.
 
         Lets strategies trade dynamically discovered symbols (e.g. funding scan_all
-        alts): without a live feed the staleness guard in _execute_signal rightly
-        blocks every entry. Idempotent at the connector level."""
+        alts, spread-scanner candidates): without a live feed the staleness guard
+        in _execute_signal rightly blocks every entry, and without an orderbook
+        spread_arb's depth check skips every trigger. Idempotent at the connector
+        level."""
         connector = self.connectors.get(exchange)
         if not connector:
             return False
         try:
             await connector.subscribe_ticker(symbol)
+            if with_orderbook:
+                await connector.subscribe_orderbook(symbol)
             return True
         except Exception as e:
             self.logger.warning(f"ensure_symbol_feed [{exchange.value}:{symbol}]: {e}")

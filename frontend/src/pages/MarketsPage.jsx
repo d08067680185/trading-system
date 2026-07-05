@@ -2,7 +2,7 @@ import { useState, useEffect, Fragment } from 'react'
 import Sparkline from '../components/Sparkline'
 import KlineChart from '../components/KlineChart'
 import { useLang } from '../i18n'
-import { Loading, PageHeader } from '../components/ui'
+import { Loading, PageHeader, Button } from '../components/ui'
 
 function authHeaders() { const k = localStorage.getItem('trading_api_key') || ''; return k ? { 'X-API-Key': k } : {} }
 
@@ -195,6 +195,99 @@ function FundingRates({ symbols, t }) {
             )
           })}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function SpreadScannerTable({ t }) {
+  const [rep, setRep] = useState(null)
+  const [watched, setWatched] = useState({})  // symbol → 'pending' | 'ok' | 'err'
+
+  useEffect(() => {
+    let alive = true
+    const load = () =>
+      fetch('/api/spread-scanner?top_n=15', { headers: authHeaders() })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (alive && d) setRep(d) })
+        .catch(() => {})
+    load()
+    const iv = setInterval(load, 45000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [])
+
+  const watch = (sym) => {
+    setWatched(w => ({ ...w, [sym]: 'pending' }))
+    fetch('/api/spread-scanner/watch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ symbol: sym }),
+    })
+      .then(r => { if (!r.ok) throw new Error(); setWatched(w => ({ ...w, [sym]: 'ok' })) })
+      .catch(() => setWatched(w => ({ ...w, [sym]: 'err' })))
+  }
+
+  const cell = { padding: '6px 10px', fontSize: 12 }
+  const head = { ...cell, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em',
+                 textTransform: 'uppercase', color: 'var(--t3)', textAlign: 'right' }
+  const rows = rep?.symbols || []
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="section-title">{t('spread_scanner')}</span>
+        <span style={{ fontSize: 11, color: 'var(--t3)' }}>
+          {t('spread_scanner_sub', rep ? Math.round(rep.target_bps) : 8)}
+          {rep?.last_error ? ` · ⚠ ${rep.last_error.slice(0, 60)}` : ''}
+        </span>
+      </div>
+      <div style={{ overflowX: 'auto', padding: '4px 8px 8px' }}>
+        {rows.length === 0 ? (
+          <div style={{ padding: 12, fontSize: 12, color: 'var(--t3)' }}>{t('spread_scanner_empty')}</div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...head, textAlign: 'left' }}>{t('symbol') || 'Symbol'}</th>
+                <th style={head}>{t('ss_last')}</th>
+                <th style={head}>{t('ss_avg')}</th>
+                <th style={head}>{t('ss_max')}</th>
+                <th style={head}>{t('ss_hits')}</th>
+                <th style={head}>{t('ss_vol')}</th>
+                <th style={{ ...head, textAlign: 'center' }}>{t('ss_action')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const st = watched[r.symbol]
+                const hot = r.hits > 0
+                return (
+                  <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ ...cell, fontWeight: 700 }}>{r.symbol}</td>
+                    <td className="num" style={{ ...cell, textAlign: 'right',
+                          color: hot ? 'var(--green)' : 'var(--t1)' }}>{r.last_bps.toFixed(1)}</td>
+                    <td className="num" style={{ ...cell, textAlign: 'right' }}>{r.avg_bps.toFixed(1)}</td>
+                    <td className="num" style={{ ...cell, textAlign: 'right' }}>{r.max_bps.toFixed(1)}</td>
+                    <td className="num" style={{ ...cell, textAlign: 'right', fontWeight: 700,
+                          color: hot ? 'var(--green)' : 'var(--t2)' }}>{r.hits}/{r.samples}</td>
+                    <td className="num" style={{ ...cell, textAlign: 'right', color: 'var(--t2)' }}>
+                      ${(r.vol24h_usdt / 1e6).toFixed(1)}M</td>
+                    <td style={{ ...cell, textAlign: 'center' }}>
+                      {st === 'ok' ? (
+                        <span style={{ fontSize: 11, color: 'var(--green)' }}>✓ {t('ss_watching')}</span>
+                      ) : (
+                        <Button size="xs" variant="ghost" disabled={st === 'pending'}
+                                onClick={() => watch(r.symbol)}>
+                          {st === 'err' ? '✗ retry' : t('ss_watch')}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   )
@@ -446,6 +539,7 @@ export default function MarketsPage({ tickers, priceHistory, symbols }) {
 
       <RegimeStrip />
       <FundingRates symbols={symbols} t={t} />
+      <SpreadScannerTable t={t} />
       <FundingHarvest t={t} />
 
       {symbols.length === 0 && (

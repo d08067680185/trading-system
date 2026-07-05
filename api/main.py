@@ -2171,6 +2171,31 @@ async def get_funding_stats(
     }
 
 
+@router.get("/spread-scanner")
+async def get_spread_scanner(top_n: int = 15):
+    """Ranked cross-exchange spot spread candidates (Binance ∩ OKX)."""
+    scanner = getattr(get_engine(), "spread_scanner", None)
+    if scanner is None:
+        raise HTTPException(status_code=503, detail="Spread scanner not running")
+    return scanner.report(top_n=top_n)
+
+
+@router.post("/spread-scanner/watch")
+async def watch_spread_symbol(body: dict):
+    """Subscribe a scanner candidate's feeds on both exchanges so spread_arb
+    starts evaluating it (ticker + orderbook — the depth check needs a book)."""
+    symbol = (body.get("symbol") or "").strip().upper()
+    if not symbol or "-" not in symbol:
+        raise HTTPException(status_code=422, detail="symbol like BASE-USDT required")
+    eng = get_engine()
+    results = {}
+    for ex in (Exchange.BINANCE_SPOT, Exchange.OKX_SPOT):
+        results[ex.value] = await eng.ensure_symbol_feed(ex, symbol, with_orderbook=True)
+    if not any(results.values()):
+        raise HTTPException(status_code=502, detail=f"subscribe failed on both: {results}")
+    return {"symbol": symbol, "subscribed": results}
+
+
 @router.get("/funding-harvest")
 async def get_funding_harvest(
     exchange: str = "binance",

@@ -247,10 +247,21 @@ async def main() -> None:
         "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "direction": "long_only",
         "cooldown_s": 120.0,
     })
+    # Same RSI mean-reversion on ETH — an independent signal stream; BTC and
+    # ETH oversold episodes only partially overlap, so this adds entries
+    # without adding correlated size (each position is capped separately).
+    futures_signal_eth = FuturesSignalStrategy("futures_signal_eth", {
+        "exchange": "okx_spot", "symbol": "ETH-USDT",
+        "position_usdt": 10.0, "signal_type": "rsi",
+        "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
+        "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "direction": "long_only",
+        "cooldown_s": 120.0,
+    })
 
     engine.add_strategy(futures_trend)
     engine.add_strategy(futures_grid)
     engine.add_strategy(futures_signal)
+    engine.add_strategy(futures_signal_eth)
 
     # Register with API so backtest can resolve strategies by ID
     register_strategy("arb_spread", SpreadArbStrategy)
@@ -262,6 +273,7 @@ async def main() -> None:
     register_strategy("futures_trend", FuturesTrendStrategy)
     register_strategy("futures_grid", FuturesGridStrategy)
     register_strategy("futures_signal", FuturesSignalStrategy)
+    register_strategy("futures_signal_eth", FuturesSignalStrategy)
 
     set_engine(engine)
 
@@ -518,6 +530,16 @@ async def main() -> None:
     from api.main import ws_manager
     health_monitor.set_broadcast(ws_manager.broadcast)
     logger.info("Quant modules initialized")
+
+    # ── Cross-exchange spread scanner ─────────────────────────────────────────
+    # BTC/ETH cross-exchange spreads are structurally ~1bp (round-8 diagnosis);
+    # the scanner watches the full Binance∩OKX spot universe for symbols whose
+    # spread repeatedly clears the arb threshold. Candidates surface on the
+    # Markets page; "watch" subscribes their feeds so spread_arb evaluates them.
+    from signals.spread_scanner import SpreadScanner
+    spread_scanner = SpreadScanner()
+    engine.spread_scanner = spread_scanner
+    await spread_scanner.start()
 
     # ── API-key trade-permission probe ────────────────────────────────────────
     # A read-only key / IP-whitelist mismatch passes every market-data check and
