@@ -259,7 +259,8 @@ function SpreadScannerTable({ t }) {
             </thead>
             <tbody>
               {rows.map((r, i) => {
-                const st = watched[r.symbol]
+                const st = watched[r.symbol] ||
+                  (rep?.watched?.includes(r.symbol) ? 'ok' : undefined)
                 const hot = r.hits > 0
                 return (
                   <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>

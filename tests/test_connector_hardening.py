@@ -127,3 +127,46 @@ def test_rate_limiter_allows_within_capacity():
         return time.monotonic() - t0
     elapsed = asyncio.run(run())
     assert elapsed < 0.1   # all within burst capacity, no sleeping
+
+
+# ── OKX private WS login ack (60011 root cause) ──────────────────────────────
+
+class _StubWS:
+    def __init__(self, messages):
+        import json as _json
+        self._msgs = [(_json.dumps(m) if isinstance(m, dict) else m) for m in messages]
+
+    async def recv(self):
+        if not self._msgs:
+            import asyncio as _a
+            await _a.sleep(999)  # simulate silence → timeout
+        return self._msgs.pop(0)
+
+
+def _okx_conn():
+    from connectors.okx import OKXConnector
+    from core.types import MarketType
+    return OKXConnector("k", "s", "p", MarketType.SPOT)
+
+
+def test_ws_login_ack_success():
+    import asyncio
+    c = _okx_conn()
+    ws = _StubWS([{"event": "login", "code": "0"}])
+    asyncio.run(c._wait_login_ack(ws, timeout=1))   # no raise = authenticated
+
+
+def test_ws_login_ack_rejection_raises():
+    import asyncio, pytest
+    c = _okx_conn()
+    ws = _StubWS([{"event": "error", "code": "60009", "msg": "Login failed"}])
+    with pytest.raises(RuntimeError, match="60009"):
+        asyncio.run(c._wait_login_ack(ws, timeout=1))
+
+
+def test_ws_login_ack_timeout_raises():
+    import asyncio, pytest
+    c = _okx_conn()
+    ws = _StubWS([])
+    with pytest.raises((RuntimeError, asyncio.TimeoutError)):
+        asyncio.run(c._wait_login_ack(ws, timeout=0.2))

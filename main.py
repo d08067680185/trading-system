@@ -541,6 +541,27 @@ async def main() -> None:
     engine.spread_scanner = spread_scanner
     await spread_scanner.start()
 
+    # Re-subscribe persisted watch-list symbols after every restart — a deploy
+    # must not silently drop the feeds the operator promoted from the scanner.
+    async def _restore_watched_symbols():
+        await asyncio.sleep(20)  # connectors need to be up first
+        try:
+            import json as _json
+            raw = await storage.get_setting("spread_scanner_watched")
+            symbols = list(_json.loads(raw)) if raw else []
+        except Exception:
+            symbols = []
+        for sym in symbols:
+            for ex in (Exchange.BINANCE_SPOT, Exchange.OKX_SPOT):
+                try:
+                    await engine.ensure_symbol_feed(ex, sym, with_orderbook=True)
+                except Exception as e:
+                    logger.warning(f"Watched-symbol resubscribe failed [{ex.value}:{sym}]: {e}")
+        if symbols:
+            logger.info(f"Restored {len(symbols)} watched symbols from DB: {symbols}")
+
+    asyncio.create_task(_restore_watched_symbols())
+
     # ── API-key trade-permission probe ────────────────────────────────────────
     # A read-only key / IP-whitelist mismatch passes every market-data check and
     # only fails at order time (e.g. Binance -2015), silently killing strategies

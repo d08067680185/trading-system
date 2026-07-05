@@ -2171,19 +2171,35 @@ async def get_funding_stats(
     }
 
 
+_WATCHED_KEY = "spread_scanner_watched"
+
+
+async def _get_watched_symbols() -> list[str]:
+    import json as _json
+    raw = await get_storage().get_setting(_WATCHED_KEY)
+    try:
+        return list(_json.loads(raw)) if raw else []
+    except Exception:
+        return []
+
+
 @router.get("/spread-scanner")
 async def get_spread_scanner(top_n: int = 15):
     """Ranked cross-exchange spot spread candidates (Binance ∩ OKX)."""
     scanner = getattr(get_engine(), "spread_scanner", None)
     if scanner is None:
         raise HTTPException(status_code=503, detail="Spread scanner not running")
-    return scanner.report(top_n=top_n)
+    report = scanner.report(top_n=top_n)
+    report["watched"] = await _get_watched_symbols()
+    return report
 
 
 @router.post("/spread-scanner/watch")
 async def watch_spread_symbol(body: dict):
     """Subscribe a scanner candidate's feeds on both exchanges so spread_arb
-    starts evaluating it (ticker + orderbook — the depth check needs a book)."""
+    starts evaluating it (ticker + orderbook — the depth check needs a book).
+    Persisted: re-subscribed automatically after every restart/deploy."""
+    import json as _json
     symbol = (body.get("symbol") or "").strip().upper()
     if not symbol or "-" not in symbol:
         raise HTTPException(status_code=422, detail="symbol like BASE-USDT required")
@@ -2193,7 +2209,32 @@ async def watch_spread_symbol(body: dict):
         results[ex.value] = await eng.ensure_symbol_feed(ex, symbol, with_orderbook=True)
     if not any(results.values()):
         raise HTTPException(status_code=502, detail=f"subscribe failed on both: {results}")
-    return {"symbol": symbol, "subscribed": results}
+    watched = await _get_watched_symbols()
+    if symbol not in watched:
+        watched.append(symbol)
+        await get_storage().set_setting(_WATCHED_KEY, _json.dumps(watched))
+    return {"symbol": symbol, "subscribed": results, "watched": watched}
+
+
+@router.delete("/spread-scanner/watch/{symbol}")
+async def unwatch_spread_symbol(symbol: str):
+    """Remove a symbol from the persisted watch list (feeds unsubscribe
+    best-effort; fully effective after the next restart)."""
+    import json as _json
+    symbol = symbol.strip().upper()
+    watched = await _get_watched_symbols()
+    if symbol in watched:
+        watched.remove(symbol)
+        await get_storage().set_setting(_WATCHED_KEY, _json.dumps(watched))
+    eng = get_engine()
+    for ex in (Exchange.BINANCE_SPOT, Exchange.OKX_SPOT):
+        conn = eng.connectors.get(ex)
+        if conn is not None:
+            try:
+                await conn.unsubscribe_ticker(symbol)
+            except Exception:
+                pass
+    return {"symbol": symbol, "watched": watched}
 
 
 @router.get("/funding-harvest")

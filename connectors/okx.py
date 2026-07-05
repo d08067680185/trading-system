@@ -243,8 +243,13 @@ class OKXConnector(BaseConnector):
                                               ssl=make_ssl_context()) as ws:
                     self._priv_ws = ws
                     backoff = 1
-                    self._priv_auth_warned = False  # reset on each new connection
                     await ws.send(json.dumps(self._ws_login_msg()))
+                    # OKX requires the login ACK before any private subscription —
+                    # subscribing immediately raced the ack and every subscribe was
+                    # rejected with 60011 "Please log in" (credentials were fine).
+                    await self._wait_login_ack(ws)
+                    self._priv_auth_warned = False
+                    self.logger.info("OKX private WS authenticated — live order/position push active")
                     # Subscribe to orders and positions
                     inst_type = "SWAP" if self.market_type == MarketType.SWAP else "SPOT"
                     await ws.send(json.dumps({
@@ -260,10 +265,39 @@ class OKXConnector(BaseConnector):
             except websockets.exceptions.ConnectionClosed as e:
                 self.logger.warning(f"OKX priv WS closed: {e}, retry in {backoff}s")
             except Exception as e:
-                self.logger.error(f"OKX priv WS error: {e}, retry in {backoff}s")
+                if "login" in str(e).lower():
+                    # Genuine auth rejection — warn once, keep retrying quietly
+                    # (a fixed key on OKX's side then reconnects without restart).
+                    if not self._priv_auth_warned:
+                        self.logger.warning(
+                            f"OKX priv WS login failed: {e} — private push disabled, "
+                            f"falling back to REST order polling; will keep retrying")
+                        self._priv_auth_warned = True
+                else:
+                    self.logger.error(f"OKX priv WS error: {e}, retry in {backoff}s")
             if self._running:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
+
+    async def _wait_login_ack(self, ws, timeout: float = 10.0) -> None:
+        """Consume messages until the login ack arrives; raise on rejection.
+
+        Any non-login private message received while waiting (possible after a
+        fast reconnect) is forwarded to the normal handler."""
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise RuntimeError("login ack timeout")
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            msg = json.loads(raw)
+            if msg.get("event") == "login":
+                if str(msg.get("code", "0")) == "0":
+                    return
+                raise RuntimeError(f"login rejected: {msg.get('code')} {msg.get('msg')}")
+            if msg.get("event") == "error":
+                raise RuntimeError(f"login error: {msg.get('code')} {msg.get('msg')}")
+            await self._handle_priv_message(msg)
 
     async def _handle_priv_message(self, msg: dict) -> None:
         self._last_msg_ts = time.time()
