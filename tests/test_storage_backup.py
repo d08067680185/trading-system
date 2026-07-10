@@ -98,3 +98,52 @@ def test_timer_flush_writes_within_interval(tmp_path):
         return count_before_close
 
     assert asyncio.run(scenario()) == 1
+
+
+# ── Precious-data export ──────────────────────────────────────────────────────
+
+def test_export_precious_contains_irreplaceable_tables(tmp_path):
+    db_path = str(tmp_path / "t.db")
+    out_dir = str(tmp_path / "backups")
+
+    async def scenario():
+        st = DataStorage(db_path)
+        await st.connect()
+        await st.store_trade("s1", "binance", "BTC-USDT", "buy", "market", 1.0, 100.0)
+        await st.store_tick("binance", "BTC-USDT", 1.0, 1.0, 2.0, 1.5)  # NOT precious
+        path = await st.export_precious(out_dir)
+        await st.close()
+        return path
+
+    path = asyncio.run(scenario())
+    con = sqlite3.connect(path)
+    try:
+        tables = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "trades" in tables and "strategy_pnl" in tables
+        assert "ticks" not in tables and "ohlcv" not in tables   # bulky/reproducible
+        assert con.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 1
+    finally:
+        con.close()
+
+
+def test_export_precious_prunes_old_exports(tmp_path):
+    db_path = str(tmp_path / "t.db")
+    out = tmp_path / "backups"
+    out.mkdir()
+    for i in range(5):
+        (out / f"precious-2026010{i}-000000.db").touch()
+
+    async def scenario():
+        st = DataStorage(db_path)
+        await st.connect()
+        await st.export_precious(str(out), keep=3)
+        await st.close()
+
+    asyncio.run(scenario())
+    remaining = sorted(p.name for p in out.glob("precious-*.db"))
+    assert len(remaining) == 3
+    # newest survive: the 2 most-recent placeholders + the fresh export
+    assert remaining[0] == "precious-20260103-000000.db"
+    assert remaining[1] == "precious-20260104-000000.db"
+    assert remaining[2].startswith("precious-2026")

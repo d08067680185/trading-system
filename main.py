@@ -600,6 +600,16 @@ async def main() -> None:
             except Exception as e:
                 logger.warning(f"DB backup failed: {e}")
 
+    # ── Daily precious-data export (host-mounted, survives volume loss) ──────
+    async def _precious_backup_loop():
+        await asyncio.sleep(1800)   # first export 30 min after start, then daily
+        while True:
+            try:
+                await storage.export_precious("backups", keep=14)
+            except Exception as e:
+                logger.warning(f"Precious-data export failed: {e}")
+            await asyncio.sleep(24 * 3600)
+
     # ── Daily DB purge (old ticks / logs) ─────────────────────────────────────
     async def _purge_loop():
         await asyncio.sleep(3600)   # first run after 1h, then every 24h
@@ -643,6 +653,7 @@ async def main() -> None:
                 logger.warning(f"Daily report failed: {e}")
 
     asyncio.create_task(_backup_loop())
+    asyncio.create_task(_precious_backup_loop())
     asyncio.create_task(_purge_loop())
     asyncio.create_task(_daily_report_loop())
 

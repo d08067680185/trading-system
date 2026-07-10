@@ -253,6 +253,58 @@ class DataStorage:
         logger.info(f"DB backup written: {dst}")
         return str(dst)
 
+    # Tables whose contents cannot be re-derived from exchanges or config —
+    # everything else (ticks, ohlcv, logs) is bulky and reproducible.
+    PRECIOUS_TABLES = (
+        "trades", "strategy_pnl", "equity_snapshots", "settings",
+        "arb_triggers", "funding_rates", "pnl_attribution",
+    )
+
+    async def export_precious(self, dst_dir: str, keep: int = 14) -> str:
+        """Export the irreplaceable tables to a small standalone sqlite file in
+        dst_dir (host-mounted — the full .bak lives in the same docker volume as
+        the live DB, so a volume loss would take both). Keeps the newest `keep`
+        exports, prunes the rest. Returns the export path."""
+        await self.flush_ticks()
+        out_dir = Path(dst_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dst = out_dir / f"precious-{stamp}.db"
+        tmp = Path(str(dst) + ".tmp")
+        src = str(self._path)
+        tables = self.PRECIOUS_TABLES
+
+        def _export() -> None:
+            import sqlite3
+            if tmp.exists():
+                tmp.unlink()
+            con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+            try:
+                con.execute("ATTACH ? AS bk", (str(tmp),))
+                for t in tables:
+                    exists = con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)
+                    ).fetchone()
+                    if exists:
+                        con.execute(f"CREATE TABLE bk.{t} AS SELECT * FROM {t}")
+                con.commit()
+                con.execute("DETACH bk")
+            finally:
+                con.close()
+            os.replace(str(tmp), str(dst))
+
+        await asyncio.to_thread(_export)
+
+        # prune oldest beyond `keep` (lexicographic == chronological for our stamp)
+        exports = sorted(out_dir.glob("precious-*.db"))
+        for old in exports[:-keep] if keep > 0 else []:
+            try:
+                old.unlink()
+            except OSError as e:
+                logger.warning(f"Precious-backup prune failed for {old}: {e}")
+        logger.info(f"Precious-data export written: {dst}")
+        return str(dst)
+
     # ── OHLCV ─────────────────────────────────────────────────────────────────
 
     async def store_ohlcv(self, rows: list[OHLCVRow]) -> int:

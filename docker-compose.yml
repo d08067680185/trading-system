@@ -23,6 +23,9 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./logs:/app/logs
+      # precious-data exports land on the HOST (survive docker-volume loss):
+      # storage.export_precious + main._precious_backup_loop
+      - ./backups:/app/backups
       - trading-data:/app/db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
