@@ -59,6 +59,22 @@ docker compose up -d        # production
 docker compose logs -f      # tail logs
 ```
 
+### Deployment (auto-deploy pipeline)
+Production runs as Docker container `trading-system-trading-1` (port 127.0.0.1:8091 via
+`docker-compose.override.yml`; the DB lives in the `trading-data` named volume at `/app/db/`).
+**Pushing to origin/main deploys**: a cron job (`~/bin/trading-auto-pull.sh`, every minute,
+logs to `auto-pull.log`) pulls, rebuilds the image and restarts the container, waiting for
+`/health` to go green. Doc-only changes (`.md`/`.txt`) skip the rebuild. The `launchd/` plists
+and `trading-system.service` are legacy (they reference paths that no longer exist) — cron+docker
+is the only live deploy path. Note: container restart cancels resting orders
+(`cancel_orders_on_shutdown`), so check `GET /api/orders` before pushing during live trading.
+
+**Gotcha — committing from this directory does NOT deploy**: the cron only rebuilds when
+origin/main is *ahead of* the local checkout. This working dir IS the deploy checkout, so after
+`git commit && git push` here, local == remote and the cron does nothing. Deploy manually:
+`docker compose build && docker compose up -d`, then verify the code actually landed
+(`docker exec trading-system-trading-1 grep <new-string> /app/<file>`).
+
 ### API auth
 `TRADING_API_KEY` is set in `.env` — every `/api/*` request needs the header
 `X-API-Key: $TRADING_API_KEY` (read it from `.env`); `/health` and `/` are open.
