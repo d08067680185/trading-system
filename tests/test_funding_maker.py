@@ -328,3 +328,137 @@ def test_successful_entry_clears_backoff():
     s = asyncio.run(run())
     assert SYM not in s._entry_fail_ts
     assert SYM in s._open_arbs
+
+
+# ── Naked-leg reversal hardening ──────────────────────────────────────────────
+
+def test_reverse_retries_after_silent_none_failure():
+    """place_order returns None on gated/failed orders (no exception) — the
+    reversal must detect that and retry, not walk away naked."""
+    async def run():
+        # call 1 = leg1 ok, call 2 = leg2 fail, call 3 = reverse fail, call 4 = reverse ok
+        eng = _FundEngine(fail_on_call={2, 3})
+        s = _fund(eng, maker_legs=False, reverse_retry_delay_s=0.01)
+        s._tickers[(Exchange.OKX, SYM)] = _tick(Exchange.OKX)
+        s._tickers[(Exchange.BINANCE, SYM)] = _tick(Exchange.BINANCE)
+        s._pending_entries[SYM] = _meta()
+        await s._execute_entry_legs(
+            SYM, [_sig(Exchange.OKX, OrderSide.BUY), _sig(Exchange.BINANCE, OrderSide.SELL)])
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    # placed: leg1, then the successful 2nd reversal attempt (failures return None)
+    assert len(eng.placed) == 2
+    assert eng.placed[1]["reduce_only"] is True and eng.placed[1]["side"] == OrderSide.SELL
+    assert SYM not in s._open_arbs
+    assert SYM in s._entry_fail_ts        # mismatch also backs the symbol off
+
+
+def test_reverse_total_failure_alerts_telegram():
+    class _Notifier:
+        def __init__(self):
+            self.alerts = []
+
+        async def alert_strategy_error(self, strategy_id, error):
+            self.alerts.append((strategy_id, error))
+
+    async def run():
+        eng = _FundEngine(fail_on_call={2, 3, 4, 5})   # leg2 + all 3 reversal attempts
+        eng._notifier = _Notifier()
+        s = _fund(eng, maker_legs=False, reverse_retry_delay_s=0.01)
+        s._tickers[(Exchange.OKX, SYM)] = _tick(Exchange.OKX)
+        s._tickers[(Exchange.BINANCE, SYM)] = _tick(Exchange.BINANCE)
+        s._pending_entries[SYM] = _meta()
+        await s._execute_entry_legs(
+            SYM, [_sig(Exchange.OKX, OrderSide.BUY), _sig(Exchange.BINANCE, OrderSide.SELL)])
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert len(eng._notifier.alerts) == 1
+    assert "NAKED LEG" in eng._notifier.alerts[0][1]
+    assert SYM not in s._open_arbs
+
+
+# ── Flat-aware exit retry (wedged-exit fix) ───────────────────────────────────
+
+class _Pos:
+    def __init__(self, symbol, size):
+        self.symbol = symbol
+        self.size = Decimal(str(size))
+
+
+class _PosConn:
+    def __init__(self, positions):
+        self._positions = positions
+
+    async def get_positions(self):
+        return self._positions
+
+
+def _flat_aware_engine(eng, flat_exchanges):
+    """Give the fake engine connectors + _conn_call: exchanges in flat_exchanges
+    report no position, others report an open one."""
+    eng.connectors = {
+        Exchange.OKX: _PosConn([] if Exchange.OKX in flat_exchanges
+                               else [_Pos(SYM, "0.25")]),
+        Exchange.BINANCE: _PosConn([] if Exchange.BINANCE in flat_exchanges
+                                   else [_Pos(SYM, "-0.25")]),
+    }
+
+    async def _conn_call(op, ex, coro_factory):
+        return await coro_factory()
+    eng._conn_call = _conn_call
+    return eng
+
+
+def test_exit_skips_leg_already_flat():
+    """Retry after a partial exit: the closed leg is skipped (a reduce_only
+    retry would be rejected and wedge the arb open forever)."""
+    async def run():
+        eng = _flat_aware_engine(_FundEngine(), flat_exchanges={Exchange.OKX})
+        s = _fund(eng, maker_legs=False)
+        meta = _meta()
+        s._open_arbs[SYM] = meta
+        await s._execute_exit_legs(SYM, s._close_signals(SYM, meta))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert len(eng.placed) == 1                       # only the still-open leg
+    assert eng.placed[0]["exchange"] == Exchange.BINANCE
+    assert SYM not in s._open_arbs and s._exit_count == 1
+
+
+def test_exit_both_flat_pops_without_orders():
+    async def run():
+        eng = _flat_aware_engine(_FundEngine(),
+                                 flat_exchanges={Exchange.OKX, Exchange.BINANCE})
+        s = _fund(eng, maker_legs=False)
+        meta = _meta()
+        s._open_arbs[SYM] = meta
+        await s._execute_exit_legs(SYM, s._close_signals(SYM, meta))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert eng.placed == []
+    assert SYM not in s._open_arbs and s._exit_count == 1
+
+
+def test_exit_position_fetch_unknown_still_attempts_leg():
+    """If the position check itself fails (None), the leg must still be tried —
+    treating 'unknown' as 'flat' could orphan a real position."""
+    async def run():
+        eng = _FundEngine()
+        eng.connectors = {Exchange.OKX: _PosConn([]), Exchange.BINANCE: _PosConn([])}
+
+        async def _conn_call(op, ex, coro_factory):
+            return None                                # fetch failed / breaker open
+        eng._conn_call = _conn_call
+        s = _fund(eng, maker_legs=False)
+        meta = _meta()
+        s._open_arbs[SYM] = meta
+        await s._execute_exit_legs(SYM, s._close_signals(SYM, meta))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert len(eng.placed) == 2                       # both legs attempted
+    assert SYM not in s._open_arbs and s._exit_count == 1

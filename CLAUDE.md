@@ -328,7 +328,7 @@ in the feeds component's `metrics.critical` / `metrics.degraded`.
 | Strategy | Default | Notes |
 |---|---|---|
 | `arb_spread` | **enabled** | Spot-to-spot only: `BINANCE_SPOT` vs `OKX_SPOT`. OKX swap min contract = 0.01 BTC ≈ $590, making small capital infeasible on swap. |
-| `funding_arb` | disabled | `scan_all=True` can buy unhedged alt spots when the short-perp leg fails; re-enable only after auditing the leg-failure path. |
+| `funding_arb` | disabled | Leg-failure path audited & hardened 2026-07-10: naked-leg reversal now checks the (None-returning) result, retries ×3 and Telegram-alerts on total failure; exits skip already-flat legs (was: -2022 rejection wedged the arb open forever); second-leg mismatch backs the symbol off. Safe to enable once Binance futures/spot API perms are restored — needs a funded counterpart wallet. |
 | `cash_carry` | disabled | Requires USDT collateral in Binance USDT-M futures; disabled when that wallet is empty. |
 | `spot_grid_btc` | enabled (inactive) | `grid_low=0, grid_high=0` keeps it inert. Set bounds via `POST /api/strategies/spot_grid_btc/params` to activate. |
 | `market_maker` | disabled | Enable via UI when ready. |

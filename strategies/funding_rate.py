@@ -512,30 +512,75 @@ class FundingRateArbStrategy(BaseStrategy):
             self.logger.error(
                 f"Entry leg mismatch [{symbol}]: second leg failed — reversing first"
             )
-            reverse = (OrderSide.SELL if sigs[0].side == OrderSide.BUY
-                       else OrderSide.BUY)
-            try:
-                await self.engine.place_order(
-                    exchange=sigs[0].exchange, symbol=symbol, side=reverse,
-                    order_type=OrderType.MARKET, quantity=first.quantity,
-                    reduce_only=True, strategy_id=self.strategy_id,
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"REVERSE FAILED [{symbol}]: {e} — naked exposure, reconciler/manual"
-                )
+            await self._reverse_naked_leg(symbol, sigs[0], first)
+            # Back off this symbol like a first-leg failure: whatever rejected
+            # the second leg (min size, margin, permissions) will likely reject
+            # it again next poll, and every retry risks another naked leg
+            self._entry_fail_ts[symbol] = time.time()
             return
 
         self._open_arbs[symbol] = meta
         self._entry_count += 1
         self._entry_fail_ts.pop(symbol, None)  # reset back-off on successful entry
 
+    async def _reverse_naked_leg(self, symbol: str, sig: Signal, first: Order) -> None:
+        """Close a naked first entry leg. place_order returns None on ANY failure
+        (risk gate, permission gate, connector error) — it does not raise — so the
+        result must be checked and retried; an unhedged leg in a live market is
+        the worst state this strategy can reach. Alerts Telegram if still exposed."""
+        reverse = OrderSide.SELL if sig.side == OrderSide.BUY else OrderSide.BUY
+        delay = float(self.params.get("reverse_retry_delay_s", 2.0))
+        last_err: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                rev = await self.engine.place_order(
+                    exchange=sig.exchange, symbol=symbol, side=reverse,
+                    order_type=OrderType.MARKET, quantity=first.quantity,
+                    reduce_only=True, strategy_id=self.strategy_id,
+                )
+            except Exception as e:
+                rev, last_err = None, e
+            if rev is not None:
+                if attempt > 0:
+                    self.logger.info(f"Naked leg reversed [{symbol}] on attempt {attempt + 1}")
+                return
+            await asyncio.sleep(delay * (attempt + 1))
+        msg = (f"NAKED LEG [{symbol}]: reverse failed after 3 attempts"
+               + (f" ({last_err})" if last_err else "")
+               + f" — {sig.exchange.value} {sig.side.value} {first.quantity} is "
+               f"UNHEDGED; close manually (positions page) or via reconciler")
+        self.logger.critical(msg)
+        notifier = getattr(self.engine, "_notifier", None)
+        if notifier:
+            try:
+                await notifier.alert_strategy_error(self.strategy_id, msg)
+            except Exception:
+                pass
+
+    async def _leg_already_flat(self, sig: Signal) -> Optional[bool]:
+        """True when the exchange reports no position for this leg's symbol —
+        its reduce_only retry would be rejected (Binance -2022 / OKX no-position),
+        which without this check wedges the exit loop forever: the closed leg
+        keeps 'failing', so the arb is never popped and blocks the symbol.
+        None = position fetch failed (unknown) — attempt the leg anyway."""
+        eng = self.engine
+        conn = getattr(eng, "connectors", {}).get(sig.exchange) if eng else None
+        conn_call = getattr(eng, "_conn_call", None)
+        if conn is None or conn_call is None:
+            return None
+        positions = await conn_call("get_positions", sig.exchange, conn.get_positions)
+        if positions is None:
+            return None
+        return not any(p.symbol == sig.symbol and abs(p.size) > 0 for p in positions)
+
     async def _execute_exit_legs(self, symbol: str, sigs: list[Signal]) -> None:
         """Execute both reduce_only exit legs; pop the arb only if both placed so a
-        failed exit is retried next poll. reduce_only makes a duplicate retry safe
-        (it cannot open a reverse position)."""
+        failed exit is retried next poll. Legs whose position is already flat
+        (closed by a previous partial exit) are skipped as done."""
         ok = True
         for sig in sigs:
+            if await self._leg_already_flat(sig):
+                continue
             order = await self._execute_leg(sig)
             if order is None:
                 ok = False
