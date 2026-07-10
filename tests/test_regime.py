@@ -44,7 +44,7 @@ def _feed_alternating(d, symbol, n, lo_price, hi_price):
 
 def test_debounce_blocks_rapid_de_escalation():
     # min_dwell large → once escalated, cannot relax within the window
-    d = RegimeDetector(min_dwell_s=1000.0, min_data=3)
+    d = RegimeDetector(min_dwell_s=1000.0, min_data=3, sample_interval_s=0.0)
     sym = "BTC-USDT"
     # build a vol history, then force an escalation
     for p in (100, 101, 100, 103, 99, 105, 98):
@@ -63,3 +63,35 @@ def test_no_prev_uses_raw():
     d = RegimeDetector()
     assert d._classify(None, 95) == EXTREME
     assert d._classify(None, 10) == LOW
+
+
+def test_de_escalation_steps_one_band_at_a_time():
+    # A single calm sample can NOT drop extreme straight to low — one band max
+    d = RegimeDetector(hysteresis_pct=7.0)
+    assert d._classify(EXTREME, 5) == HIGH
+    assert d._classify(HIGH, 5) == NORMAL
+    assert d._classify(NORMAL, 5) == LOW
+
+
+def test_de_escalation_hysteresis_buffer():
+    # EXTREME lower bound is 90; with margin 7, drop only below 83
+    d = RegimeDetector(hysteresis_pct=7.0)
+    assert d._classify(EXTREME, 80) == HIGH      # below 83 → one band down
+    assert d._classify(EXTREME, 85) == EXTREME   # within buffer → hold
+
+
+def test_sampling_throttles_tick_flood():
+    # 100 ticks in the same instant → only the first is sampled
+    d = RegimeDetector(min_data=3, sample_interval_s=60.0)
+    accepted = 0
+    for i in range(100):
+        d.update("BTC-USDT", 100 + (i % 2))
+        accepted = len(d._prices.get("BTC-USDT", []))
+    assert accepted == 1
+
+
+def test_sampling_disabled_processes_every_tick():
+    d = RegimeDetector(min_data=3, sample_interval_s=0.0)
+    for i in range(10):
+        d.update("BTC-USDT", 100 + (i % 3))
+    assert len(d._prices["BTC-USDT"]) == 10

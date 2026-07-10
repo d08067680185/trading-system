@@ -202,6 +202,13 @@ class _FakeEngine:
         self.connectors = {Exchange.BINANCE: connector}
         self._connector_states = {"binance": state}
         self.risk_manager = rm
+        self.conn_errors: list[tuple[str, str, str]] = []
+
+    def _log_conn_error(self, op, exchange, exc):
+        self.conn_errors.append((op, exchange, str(exc)))
+
+    def _clear_conn_error(self, op, exchange):
+        pass
 
 
 def _position(symbol, size, mark):

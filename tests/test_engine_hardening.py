@@ -154,3 +154,49 @@ def test_permission_gate_allows_reduce_only_through():
                  quantity=Decimal("0.01"), reduce_only=True, strategy_id="t")
     order = asyncio.run(e._execute_signal(sig))
     assert order is not None and placed.get("symbol") == "ETH-USDT"
+
+
+# ── Connector-error log throttle ─────────────────────────────────────────────
+
+def test_conn_error_throttle_logs_once_then_suppresses(caplog):
+    import logging as _logging
+    e = _engine()
+    err = RuntimeError("401 {'code': -2015}")
+    with caplog.at_level(_logging.WARNING, logger="TradingEngine"):
+        for _ in range(50):
+            e._log_conn_error("get_positions", "binance", err)
+    # one ERROR on first occurrence, repeats silently counted within the window
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == _logging.ERROR
+    assert e._conn_err_state[("get_positions", "binance")][2] == 49
+
+
+def test_conn_error_throttle_summarizes_after_window(caplog):
+    import logging as _logging
+    e = _engine()
+    e._conn_err_window_s = 0.0   # every repeat is "past the window"
+    err = RuntimeError("401")
+    with caplog.at_level(_logging.WARNING, logger="TradingEngine"):
+        e._log_conn_error("get_balances", "binance", err)   # ERROR
+        e._log_conn_error("get_balances", "binance", err)   # summary WARNING
+    assert [r.levelno for r in caplog.records] == [_logging.ERROR, _logging.WARNING]
+
+
+def test_conn_error_new_message_logs_again(caplog):
+    import logging as _logging
+    e = _engine()
+    with caplog.at_level(_logging.WARNING, logger="TradingEngine"):
+        e._log_conn_error("get_positions", "binance", RuntimeError("401"))
+        e._log_conn_error("get_positions", "binance", RuntimeError("timeout"))
+    assert [r.levelno for r in caplog.records] == [_logging.ERROR, _logging.ERROR]
+
+
+def test_conn_error_clear_logs_recovery_once(caplog):
+    import logging as _logging
+    e = _engine()
+    e._log_conn_error("get_positions", "binance", RuntimeError("401"))
+    with caplog.at_level(_logging.INFO, logger="TradingEngine"):
+        e._clear_conn_error("get_positions", "binance")
+        e._clear_conn_error("get_positions", "binance")   # already clear → silent
+    recov = [r for r in caplog.records if "recovered" in r.message]
+    assert len(recov) == 1

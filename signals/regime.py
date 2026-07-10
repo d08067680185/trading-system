@@ -69,12 +69,14 @@ class RegimeDetector:
         min_data: int = 10,        # minimum data points before classifying
         hysteresis_pct: float = 7.0,   # percentile buffer past a boundary before switching
         min_dwell_s: float = 30.0,     # min seconds a regime must hold before de-escalating
+        sample_interval_s: float = 5.0,  # min seconds between accepted price samples
     ):
         self._short = short_window
         self._long  = long_window
         self._min   = min_data
         self._hysteresis = hysteresis_pct
         self._min_dwell  = min_dwell_s
+        self._sample_interval = sample_interval_s
 
         # symbol → recent prices (short window for vol)
         self._prices: dict[str, deque] = {}
@@ -84,12 +86,26 @@ class RegimeDetector:
         self._snapshots: dict[str, RegimeSnapshot] = {}
         # symbol → monotonic time of last accepted regime change (debounce)
         self._last_change: dict[str, float] = {}
+        # symbol → monotonic time of last accepted price sample
+        self._last_sample: dict[str, float] = {}
 
     def update(self, symbol: str, price: float) -> Optional[RegimeSnapshot]:
         """Update with a new price tick. Returns updated snapshot if regime changed."""
         if symbol not in self._prices:
             self._prices[symbol] = deque(maxlen=self._short + 1)
             self._vol_history[symbol] = deque(maxlen=self._long)
+
+        # Time-based sampling: ticks arrive many times per second, but a vol
+        # estimate over a 20-tick window spanning ~2s is noise (the percentile
+        # whipsawed 8→99 within a second, flapping the regime every dwell
+        # window). Sampling stretches the window to short_window×interval
+        # seconds of price action.
+        if self._sample_interval > 0:
+            now = time.monotonic()
+            last = self._last_sample.get(symbol)
+            if last is not None and (now - last) < self._sample_interval:
+                return None
+            self._last_sample[symbol] = now
 
         self._prices[symbol].append(price)
         if len(self._prices[symbol]) < self._min:
@@ -203,11 +219,14 @@ class RegimeDetector:
             return self._classify_raw(pct)
         idx = _ORDER[prev_regime]
         m = self._hysteresis
-        # escalate while clearly above the next boundary
+        # escalate while clearly above the next boundary (de-risking may skip bands)
         while idx < 3 and pct >= _UP_BOUNDS[idx] + m:
             idx += 1
-        # de-escalate while clearly below the lower boundary
-        while idx > 0 and pct < _UP_BOUNDS[idx - 1] - m:
+        # de-escalate at most ONE band per update: relaxing risk happens gradually,
+        # and each accepted step re-arms the dwell timer — so extreme→low takes at
+        # least 3 dwell windows instead of one multi-band drop that a single noisy
+        # sample can trigger (and immediately re-escalate from, flapping the regime)
+        if idx == _ORDER[prev_regime] and idx > 0 and pct < _UP_BOUNDS[idx - 1] - m:
             idx -= 1
         return _REGIMES[idx]
 

@@ -80,8 +80,9 @@ class PositionReconciler:
 
             try:
                 actual_positions = await connector.get_positions()
+                self._engine._clear_conn_error("reconcile", ex.value)
             except Exception as e:
-                logger.warning(f"Reconcile: failed to fetch positions [{ex.value}]: {e}")
+                self._engine._log_conn_error("reconcile", ex.value, e)
                 continue
 
             # Build lookup: symbol → actual notional

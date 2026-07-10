@@ -16,7 +16,22 @@ import sys
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "trading_data.db"
+_ROOT = Path(__file__).parent.parent
+
+
+def _resolve_db_path() -> Path:
+    """DB location comes from config.yaml data.db_path (default db/trading_data.db)."""
+    default = _ROOT / "db" / "trading_data.db"
+    try:
+        import yaml
+        cfg = yaml.safe_load((_ROOT / "config.yaml").read_text()) or {}
+        rel = (cfg.get("data") or {}).get("db_path")
+        return (_ROOT / rel) if rel else default
+    except Exception:
+        return default
+
+
+DB_PATH = _resolve_db_path()
 PID_FILE = Path("/tmp/trading_system.pid")
 
 

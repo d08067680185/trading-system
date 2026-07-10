@@ -595,9 +595,14 @@ async def close_all_positions():
 async def cancel_all_orders(exchange: Optional[str] = None):
     """Cancel all open orders, optionally filtered by exchange."""
     eng = get_engine()
-    orders = await eng.get_orders()
-    if exchange:
-        orders = [o for o in orders if o.exchange.value == exchange]
+    orders = []
+    for ex, conn in eng.connectors.items():
+        if exchange and ex.value != exchange:
+            continue
+        try:
+            orders.extend(await conn.get_open_orders(None))
+        except Exception as e:
+            eng._log_conn_error("get_open_orders", ex.value, e)
     results = []
     for order in orders:
         try:
@@ -636,7 +641,14 @@ async def get_open_orders(exchange: Optional[str] = None, symbol: Optional[str] 
     for ex, conn in eng.connectors.items():
         if exchange and ex.value != exchange:
             continue
-        orders = await conn.get_open_orders(symbol)
+        try:
+            orders = await conn.get_open_orders(symbol)
+            eng._clear_conn_error("get_open_orders", ex.value)
+        except Exception as e:
+            # one dead exchange (e.g. revoked API-key perms → 401) must not 500
+            # the whole endpoint — skip it and return the healthy exchanges
+            eng._log_conn_error("get_open_orders", ex.value, e)
+            continue
         for o in orders:
             results.append({
                 "exchange": o.exchange.value,

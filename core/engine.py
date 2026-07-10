@@ -53,6 +53,11 @@ class TradingEngine:
         # FILLED events already fanned out to strategy.record_fill — the same fill
         # can arrive via both private WS and the REST poller
         self._processed_fill_ids: set[str] = set()
+        # (op, exchange) → [last_msg, last_logged_monotonic, suppressed_count] — a
+        # persistent connector failure (e.g. revoked API-key perms → 401 every poll)
+        # logs ERROR once, then a summary WARNING per window instead of per call
+        self._conn_err_state: dict[tuple[str, str], list] = {}
+        self._conn_err_window_s: float = 600.0
         self.logger = logging.getLogger("TradingEngine")
         # Optional pluggable modules (set externally after construction)
         self.position_sizer  = None     # risk.position_sizer.PositionSizer
@@ -736,22 +741,50 @@ class TradingEngine:
             self.logger.warning(f"ensure_symbol_feed [{exchange.value}:{symbol}]: {e}")
             return False
 
+    def _log_conn_error(self, op: str, exchange: str, exc: Exception) -> None:
+        """Log a connector call failure without spamming on persistent errors.
+
+        First occurrence (or a different message) logs ERROR; identical repeats
+        are counted silently and summarized as one WARNING per window."""
+        key = (op, exchange)
+        msg = str(exc)
+        now = time.monotonic()
+        state = self._conn_err_state.get(key)
+        if state is None or state[0] != msg:
+            self._conn_err_state[key] = [msg, now, 0]
+            self.logger.error(f"{op} [{exchange}]: {msg} (repeats suppressed for "
+                              f"{self._conn_err_window_s:.0f}s)")
+        elif now - state[1] >= self._conn_err_window_s:
+            self.logger.warning(f"{op} [{exchange}]: still failing "
+                                f"({state[2] + 1} occurrences in last "
+                                f"{now - state[1]:.0f}s): {msg}")
+            state[1], state[2] = now, 0
+        else:
+            state[2] += 1
+
+    def _clear_conn_error(self, op: str, exchange: str) -> None:
+        if self._conn_err_state.pop((op, exchange), None) is not None:
+            self.logger.info(f"{op} [{exchange}]: recovered")
+
     async def get_positions(self, exchange: Optional[Exchange] = None) -> list:
         if exchange:
             conn = self.connectors.get(exchange)
             if not conn:
                 return []
             try:
-                return await conn.get_positions()
+                result = await conn.get_positions()
+                self._clear_conn_error("get_positions", exchange.value)
+                return result
             except Exception as e:
-                self.logger.error(f"get_positions [{exchange.value}]: {e}")
+                self._log_conn_error("get_positions", exchange.value, e)
                 return []
         results = []
         for ex, conn in self.connectors.items():
             try:
                 results.extend(await conn.get_positions())
+                self._clear_conn_error("get_positions", ex.value)
             except Exception as e:
-                self.logger.error(f"get_positions [{ex.value}]: {e}")
+                self._log_conn_error("get_positions", ex.value, e)
         return results
 
     async def get_balances(self, exchange: Optional[Exchange] = None) -> list:
@@ -760,16 +793,19 @@ class TradingEngine:
             if not conn:
                 return []
             try:
-                return await conn.get_balances()
+                result = await conn.get_balances()
+                self._clear_conn_error("get_balances", exchange.value)
+                return result
             except Exception as e:
-                self.logger.error(f"get_balances [{exchange.value}]: {e}")
+                self._log_conn_error("get_balances", exchange.value, e)
                 return []
         results = []
         for ex, conn in self.connectors.items():
             try:
                 results.extend(await conn.get_balances())
+                self._clear_conn_error("get_balances", ex.value)
             except Exception as e:
-                self.logger.error(f"get_balances [{ex.value}]: {e}")
+                self._log_conn_error("get_balances", ex.value, e)
         return results
 
     # ── Status ────────────────────────────────────────────────────────────────
