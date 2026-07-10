@@ -200,3 +200,58 @@ def test_conn_error_clear_logs_recovery_once(caplog):
         e._clear_conn_error("get_positions", "binance")   # already clear → silent
     recov = [r for r in caplog.records if "recovered" in r.message]
     assert len(recov) == 1
+
+
+def test_auth_breaker_skips_doomed_calls():
+    import asyncio
+    e = _engine()
+    calls = {"n": 0}
+
+    class _Conn401:
+        async def get_positions(self):
+            calls["n"] += 1
+            raise RuntimeError("Binance GET /fapi/v2/positionRisk: 401 {'code': -2015}")
+    e.connectors[Exchange.BINANCE] = _Conn401()
+
+    async def poll(times):
+        for _ in range(times):
+            assert await e.get_positions(Exchange.BINANCE) == []
+    asyncio.run(poll(10))
+    # first call trips the breaker; the other 9 are skipped
+    assert calls["n"] == 1
+    assert e._auth_breaker_open("get_positions", "binance")
+
+
+def test_auth_breaker_reopens_after_cooldown_and_recovers():
+    import asyncio
+    e = _engine()
+    e._auth_breaker_cooldown_s = 0.0   # cooldown expires immediately
+    seq = {"n": 0}
+
+    class _FlakyConn:
+        async def get_balances(self):
+            seq["n"] += 1
+            if seq["n"] == 1:
+                raise RuntimeError("401 {'code': -2015}")
+            return ["ok"]
+    e.connectors[Exchange.BINANCE] = _FlakyConn()
+
+    async def run():
+        assert await e.get_balances(Exchange.BINANCE) == []      # trips breaker
+        assert await e.get_balances(Exchange.BINANCE) == ["ok"]  # cooldown over → retried
+    asyncio.run(run())
+    assert not e._auth_breaker_open("get_balances", "binance")
+    assert ("get_balances", "binance") not in e._conn_err_state  # cleared on success
+
+
+def test_non_auth_errors_do_not_trip_breaker():
+    import asyncio
+    e = _engine()
+
+    class _TimeoutConn:
+        async def get_positions(self):
+            raise RuntimeError("connection timeout")
+    e.connectors[Exchange.BINANCE] = _TimeoutConn()
+
+    asyncio.run(e.get_positions(Exchange.BINANCE))
+    assert not e._auth_breaker_open("get_positions", "binance")

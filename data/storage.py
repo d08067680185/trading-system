@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS ticks (
     volume_24h  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ticks_lookup ON ticks(exchange, symbol, ts);
+-- bare-ts index: the daily purge deletes WHERE ts < cutoff — without this the
+-- terminal batch full-scans the multi-GB table while holding the write lock
+CREATE INDEX IF NOT EXISTS idx_ticks_ts ON ticks(ts);
 
 CREATE TABLE IF NOT EXISTS trades (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,7 +193,10 @@ class DataStorage:
             await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute("PRAGMA synchronous=NORMAL")
             await self._db.execute("PRAGMA cache_size=-65536")   # 64 MB page cache
-            await self._db.execute("PRAGMA temp_store=MEMORY")
+            # temp_store stays on disk (default): with MEMORY, any big sort —
+            # e.g. CREATE INDEX over the multi-GB ticks table — happens fully
+            # in RAM and OOM-kills the container (observed 2026-07-10, 39
+            # crash-loop restarts in a 1.9GB VM; disk-based build took 17s)
             await self._db.executescript(DDL)
             await self._db.commit()
             logger.info(f"DataStorage connected: {self._path}")

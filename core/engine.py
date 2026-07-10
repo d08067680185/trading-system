@@ -58,6 +58,9 @@ class TradingEngine:
         # logs ERROR once, then a summary WARNING per window instead of per call
         self._conn_err_state: dict[tuple[str, str], list] = {}
         self._conn_err_window_s: float = 600.0
+        # (op, exchange) → monotonic deadline: auth-failure circuit breaker —
+        # while open, the doomed REST call is skipped entirely
+        self._auth_breaker: dict[tuple[str, str], float] = {}
         self.logger = logging.getLogger("TradingEngine")
         # Optional pluggable modules (set externally after construction)
         self.position_sizer  = None     # risk.position_sizer.PositionSizer
@@ -741,6 +744,11 @@ class TradingEngine:
             self.logger.warning(f"ensure_symbol_feed [{exchange.value}:{symbol}]: {e}")
             return False
 
+    # Auth failures (revoked key perms) are deterministic — every retry within
+    # minutes is a wasted REST call. Marker substrings identify them.
+    _AUTH_ERR_MARKERS = ("-2015", "401", "50111", "50113")   # binance perm/IP, okx auth
+    _auth_breaker_cooldown_s: float = 120.0
+
     def _log_conn_error(self, op: str, exchange: str, exc: Exception) -> None:
         """Log a connector call failure without spamming on persistent errors.
 
@@ -761,30 +769,50 @@ class TradingEngine:
             state[1], state[2] = now, 0
         else:
             state[2] += 1
+        if any(marker in msg for marker in self._AUTH_ERR_MARKERS):
+            self._auth_breaker[key] = now + self._auth_breaker_cooldown_s
 
     def _clear_conn_error(self, op: str, exchange: str) -> None:
+        self._auth_breaker.pop((op, exchange), None)
         if self._conn_err_state.pop((op, exchange), None) is not None:
             self.logger.info(f"{op} [{exchange}]: recovered")
+
+    def _auth_breaker_open(self, op: str, exchange: str) -> bool:
+        """True while the (op, exchange) REST call is known to fail on auth —
+        callers skip the doomed request and retry after the cooldown."""
+        until = self._auth_breaker.get((op, exchange))
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            del self._auth_breaker[(op, exchange)]
+            return False
+        return True
+
+    async def _conn_call(self, op: str, ex: Exchange, coro_factory) -> Optional[list]:
+        """Run a private REST call with error throttling + auth circuit breaker.
+
+        Returns the call result, or None when the call failed / was skipped
+        because the breaker is open (a recent auth failure makes the retry
+        pointless until the cooldown expires)."""
+        if self._auth_breaker_open(op, ex.value):
+            return None
+        try:
+            result = await coro_factory()
+            self._clear_conn_error(op, ex.value)
+            return result
+        except Exception as e:
+            self._log_conn_error(op, ex.value, e)
+            return None
 
     async def get_positions(self, exchange: Optional[Exchange] = None) -> list:
         if exchange:
             conn = self.connectors.get(exchange)
             if not conn:
                 return []
-            try:
-                result = await conn.get_positions()
-                self._clear_conn_error("get_positions", exchange.value)
-                return result
-            except Exception as e:
-                self._log_conn_error("get_positions", exchange.value, e)
-                return []
+            return await self._conn_call("get_positions", exchange, conn.get_positions) or []
         results = []
         for ex, conn in self.connectors.items():
-            try:
-                results.extend(await conn.get_positions())
-                self._clear_conn_error("get_positions", ex.value)
-            except Exception as e:
-                self._log_conn_error("get_positions", ex.value, e)
+            results.extend(await self._conn_call("get_positions", ex, conn.get_positions) or [])
         return results
 
     async def get_balances(self, exchange: Optional[Exchange] = None) -> list:
@@ -792,20 +820,10 @@ class TradingEngine:
             conn = self.connectors.get(exchange)
             if not conn:
                 return []
-            try:
-                result = await conn.get_balances()
-                self._clear_conn_error("get_balances", exchange.value)
-                return result
-            except Exception as e:
-                self._log_conn_error("get_balances", exchange.value, e)
-                return []
+            return await self._conn_call("get_balances", exchange, conn.get_balances) or []
         results = []
         for ex, conn in self.connectors.items():
-            try:
-                results.extend(await conn.get_balances())
-                self._clear_conn_error("get_balances", ex.value)
-            except Exception as e:
-                self._log_conn_error("get_balances", ex.value, e)
+            results.extend(await self._conn_call("get_balances", ex, conn.get_balances) or [])
         return results
 
     # ── Status ────────────────────────────────────────────────────────────────

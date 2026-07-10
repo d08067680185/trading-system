@@ -599,10 +599,8 @@ async def cancel_all_orders(exchange: Optional[str] = None):
     for ex, conn in eng.connectors.items():
         if exchange and ex.value != exchange:
             continue
-        try:
-            orders.extend(await conn.get_open_orders(None))
-        except Exception as e:
-            eng._log_conn_error("get_open_orders", ex.value, e)
+        orders.extend(await eng._conn_call("get_open_orders", ex,
+                                           lambda c=conn: c.get_open_orders(None)) or [])
     results = []
     for order in orders:
         try:
@@ -641,13 +639,11 @@ async def get_open_orders(exchange: Optional[str] = None, symbol: Optional[str] 
     for ex, conn in eng.connectors.items():
         if exchange and ex.value != exchange:
             continue
-        try:
-            orders = await conn.get_open_orders(symbol)
-            eng._clear_conn_error("get_open_orders", ex.value)
-        except Exception as e:
-            # one dead exchange (e.g. revoked API-key perms → 401) must not 500
-            # the whole endpoint — skip it and return the healthy exchanges
-            eng._log_conn_error("get_open_orders", ex.value, e)
+        # throttled + circuit-broken: one dead exchange (e.g. revoked API-key
+        # perms → 401) must not 500 the whole endpoint or spam doomed calls
+        orders = await eng._conn_call("get_open_orders", ex,
+                                      lambda c=conn: c.get_open_orders(symbol))
+        if orders is None:
             continue
         for o in orders:
             results.append({
