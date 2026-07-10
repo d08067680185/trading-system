@@ -605,7 +605,9 @@ async def main() -> None:
         await asyncio.sleep(3600)   # first run after 1h, then every 24h
         while True:
             try:
-                result = await storage.purge_old_data(ticks_days=7, logs_days=30, attribution_days=90)
+                # ticks: only offline analysis scripts read this table — 3 days
+                # (~2.7GB) covers spread research; 7d held ~6.3GB for nothing
+                result = await storage.purge_old_data(ticks_days=3, logs_days=30, attribution_days=90)
                 logger.info(f"Daily DB purge complete: {result}")
             except Exception as e:
                 logger.warning(f"DB purge failed: {e}")

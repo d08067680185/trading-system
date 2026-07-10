@@ -178,10 +178,19 @@ class OHLCVRow:
 
 
 class DataStorage:
+    # Tick write batching: flush when the buffer reaches this many rows or
+    # this many seconds pass, whichever first. Ticks are sampled market data —
+    # losing the last ≤2s on a hard crash is acceptable; everything else
+    # (trades, PnL, logs) still commits immediately.
+    TICK_FLUSH_ROWS = 100
+    TICK_FLUSH_INTERVAL_S = 2.0
+
     def __init__(self, db_path: str = "trading_data.db"):
         self._path = db_path
         self._db = None
         self._lock = asyncio.Lock()
+        self._tick_buf: list[tuple] = []
+        self._tick_flush_task: Optional[asyncio.Task] = None
 
     async def connect(self) -> None:
         try:
@@ -204,6 +213,12 @@ class DataStorage:
             raise RuntimeError("aiosqlite not installed. Run: pip install aiosqlite>=0.20")
 
     async def close(self) -> None:
+        if self._tick_flush_task and not self._tick_flush_task.done():
+            self._tick_flush_task.cancel()
+        try:
+            await self.flush_ticks()
+        except Exception as e:
+            logger.warning(f"Final tick flush failed: {e}")
         if self._db:
             await self._db.close()
 
@@ -214,6 +229,7 @@ class DataStorage:
         WAL-mode DB (which silently drops un-checkpointed WAL content), this
         produces a consistent, compacted snapshot without stalling the main
         connection. Falls back to a raw copy if VACUUM INTO fails."""
+        await self.flush_ticks()   # buffered ticks should make the snapshot
         src = Path(self._path)
         dst = Path(str(src) + suffix)
         tmp = Path(str(dst) + ".tmp")
@@ -296,10 +312,32 @@ class DataStorage:
     async def store_tick(self, exchange: str, symbol: str, ts: float,
                          bid: Optional[float], ask: Optional[float],
                          last: Optional[float], volume_24h: Optional[float] = None) -> None:
+        """Buffer the tick; flushed in batches (see TICK_FLUSH_* constants).
+
+        Per-tick INSERT+COMMIT was ~100 commits/s of pure overhead (4 aiosqlite
+        worker-thread round-trips per tick) for sampled data nothing reads live."""
+        self._tick_buf.append((exchange, symbol, ts, bid, ask, last, volume_24h))
+        if len(self._tick_buf) >= self.TICK_FLUSH_ROWS:
+            await self.flush_ticks()
+        elif self._tick_flush_task is None or self._tick_flush_task.done():
+            self._tick_flush_task = asyncio.create_task(self._delayed_tick_flush())
+
+    async def _delayed_tick_flush(self) -> None:
+        await asyncio.sleep(self.TICK_FLUSH_INTERVAL_S)
+        try:
+            await self.flush_ticks()
+        except Exception as e:
+            logger.warning(f"Tick flush failed: {e}")
+
+    async def flush_ticks(self) -> None:
+        """Write all buffered ticks in one transaction."""
+        if not self._tick_buf or self._db is None:
+            return
+        batch, self._tick_buf = self._tick_buf, []
         async with self._lock:
-            await self._db.execute(
+            await self._db.executemany(
                 "INSERT INTO ticks(exchange,symbol,ts,bid,ask,last,volume_24h) VALUES(?,?,?,?,?,?,?)",
-                (exchange, symbol, ts, bid, ask, last, volume_24h),
+                batch,
             )
             await self._db.commit()
 

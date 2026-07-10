@@ -225,6 +225,12 @@ def set_engine(engine: TradingEngine) -> None:
     _engine = engine
 
     async def _broadcast(event):
+        # Fast path: with no WS clients, serialization is dead work at full
+        # ticker rate (hundreds/sec). Tickers still need processing when price
+        # alert rules exist; regime/extended-alert side effects below only
+        # produce WS broadcasts, so they are dead without clients too.
+        if not ws_manager._clients and not (_alert_rules and isinstance(event, TickerEvent)):
+            return
         msg = serialize_event(event)
         if msg:
             await ws_manager.broadcast(msg)
