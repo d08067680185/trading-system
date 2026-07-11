@@ -17,6 +17,7 @@ Exit conditions:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import ssl
 import time
@@ -144,6 +145,9 @@ class FundingRateArbStrategy(BaseStrategy):
         self._maker_orders: dict[str, str] = {}
         # symbol → epoch-second of last entry failure (for back-off)
         self._entry_fail_ts: dict[str, float] = {}
+        # _open_arbs/_entry_fail_ts survive restarts via the settings table —
+        # an open arb forgotten across a deploy is an unmanaged position pair
+        self._state_loaded = False
 
         self._poll_task: Optional[asyncio.Task] = None
         self._ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -206,6 +210,7 @@ class FundingRateArbStrategy(BaseStrategy):
         if pos.size == 0 and pos.symbol in self._open_arbs:
             arb = self._open_arbs.pop(pos.symbol)
             self._exit_count += 1
+            self._save_state_soon()
             self.logger.info(
                 f"Arb closed for {pos.symbol} "
                 f"(was: long={arb['long_ex']}, short={arb['short_ex']})"
@@ -215,6 +220,8 @@ class FundingRateArbStrategy(BaseStrategy):
 
     async def _poll_loop(self) -> None:
         self.logger.info("Funding rate poll loop started")
+        if not self._state_loaded:
+            await self._load_state()
         while self._enabled:
             try:
                 await self._fetch_and_evaluate()
@@ -485,6 +492,51 @@ class FundingRateArbStrategy(BaseStrategy):
             ),
         ]
 
+    # ── State persistence (survives container restarts / deploys) ────────────
+
+    def _state_key(self) -> str:
+        return f"funding_arb:{self.strategy_id}:state"
+
+    def _storage_for_state(self):
+        if self._is_backtest():
+            return None
+        return getattr(self.engine, "storage", None) if self.engine else None
+
+    async def _load_state(self) -> None:
+        self._state_loaded = True
+        storage = self._storage_for_state()
+        if storage is None:
+            return
+        try:
+            raw = await storage.get_setting(self._state_key())
+            if not raw:
+                return
+            st = json.loads(raw)
+            self._open_arbs = dict(st.get("open_arbs", {}))
+            self._entry_fail_ts = {k: float(v) for k, v in st.get("entry_fail_ts", {}).items()}
+            if self._open_arbs:
+                self.logger.warning(
+                    f"Restored {len(self._open_arbs)} open funding arb(s) after "
+                    f"restart: {sorted(self._open_arbs)} — exit management resumes"
+                )
+        except Exception as e:
+            self.logger.warning(f"funding_arb state restore failed: {e}")
+
+    def _save_state_soon(self) -> None:
+        """Fire-and-forget persist of open arbs + entry back-offs."""
+        storage = self._storage_for_state()
+        if storage is None:
+            return
+        payload = json.dumps({
+            "open_arbs": self._open_arbs,
+            "entry_fail_ts": self._entry_fail_ts,
+        })
+        try:
+            asyncio.get_running_loop().create_task(
+                storage.set_setting(self._state_key(), payload))
+        except RuntimeError:
+            pass  # no loop (sync test context)
+
     # ── Leg execution (maker with market fallback) ────────────────────────────
 
     async def _execute_entry_legs(self, symbol: str, sigs: list[Signal]) -> None:
@@ -504,6 +556,7 @@ class FundingRateArbStrategy(BaseStrategy):
         if first is None:
             self.logger.warning(f"Entry aborted [{symbol}]: first leg failed")
             self._entry_fail_ts[symbol] = time.time()
+            self._save_state_soon()
             return
 
         second = await self._execute_leg(sigs[1])
@@ -517,11 +570,13 @@ class FundingRateArbStrategy(BaseStrategy):
             # the second leg (min size, margin, permissions) will likely reject
             # it again next poll, and every retry risks another naked leg
             self._entry_fail_ts[symbol] = time.time()
+            self._save_state_soon()
             return
 
         self._open_arbs[symbol] = meta
         self._entry_count += 1
         self._entry_fail_ts.pop(symbol, None)  # reset back-off on successful entry
+        self._save_state_soon()
 
     async def _reverse_naked_leg(self, symbol: str, sig: Signal, first: Order) -> None:
         """Close a naked first entry leg. place_order returns None on ANY failure
@@ -587,6 +642,7 @@ class FundingRateArbStrategy(BaseStrategy):
         if ok:
             self._open_arbs.pop(symbol, None)
             self._exit_count += 1
+            self._save_state_soon()
         else:
             self.logger.error(
                 f"Exit incomplete [{symbol}]: arb kept open for retry next poll"

@@ -462,3 +462,87 @@ def test_exit_position_fetch_unknown_still_attempts_leg():
     eng, s = asyncio.run(run())
     assert len(eng.placed) == 2                       # both legs attempted
     assert SYM not in s._open_arbs and s._exit_count == 1
+
+
+# ── State persistence across restarts ─────────────────────────────────────────
+
+class _SettingsStore:
+    def __init__(self):
+        self.data = {}
+
+    async def get_setting(self, key):
+        return self.data.get(key)
+
+    async def set_setting(self, key, value):
+        self.data[key] = value
+
+
+def test_open_arb_state_survives_restart():
+    """Promote an arb, then simulate a restart: the new instance must restore
+    _open_arbs so exit management resumes (was memory-only → orphaned pair)."""
+    store = _SettingsStore()
+
+    async def first_life():
+        eng = _FundEngine()
+        eng.storage = store
+        s = _fund(eng, maker_legs=False)
+        s._tickers[(Exchange.OKX, SYM)] = _tick(Exchange.OKX)
+        s._tickers[(Exchange.BINANCE, SYM)] = _tick(Exchange.BINANCE)
+        s._pending_entries[SYM] = _meta()
+        await s._execute_entry_legs(
+            SYM, [_sig(Exchange.OKX, OrderSide.BUY), _sig(Exchange.BINANCE, OrderSide.SELL)])
+        await asyncio.sleep(0)          # let the fire-and-forget save task run
+        return s
+
+    async def second_life():
+        eng = _FundEngine()
+        eng.storage = store
+        s = _fund(eng, maker_legs=False)
+        await s._load_state()
+        return s
+
+    s1 = asyncio.run(first_life())
+    assert SYM in s1._open_arbs
+    s2 = asyncio.run(second_life())
+    assert SYM in s2._open_arbs
+    assert s2._open_arbs[SYM]["long_ex"] == "okx"
+
+
+def test_entry_backoff_survives_restart():
+    store = _SettingsStore()
+
+    async def first_life():
+        eng = _FundEngine(fail_on_call={1})
+        eng.storage = store
+        s = _fund(eng, maker_legs=False)
+        s._tickers[(Exchange.OKX, SYM)] = _tick(Exchange.OKX)
+        s._tickers[(Exchange.BINANCE, SYM)] = _tick(Exchange.BINANCE)
+        s._pending_entries[SYM] = _meta()
+        await s._execute_entry_legs(
+            SYM, [_sig(Exchange.OKX, OrderSide.BUY), _sig(Exchange.BINANCE, OrderSide.SELL)])
+        await asyncio.sleep(0)
+        return s
+
+    async def second_life():
+        eng = _FundEngine()
+        eng.storage = store
+        s = _fund(eng, maker_legs=False)
+        await s._load_state()
+        return s
+
+    asyncio.run(first_life())
+    s2 = asyncio.run(second_life())
+    assert SYM in s2._entry_fail_ts
+
+
+def test_state_restore_absent_is_noop():
+    async def run():
+        eng = _FundEngine()
+        eng.storage = _SettingsStore()   # empty
+        s = _fund(eng, maker_legs=False)
+        await s._load_state()
+        return s
+
+    s = asyncio.run(run())
+    assert s._open_arbs == {} and s._entry_fail_ts == {}
+    assert s._state_loaded is True
