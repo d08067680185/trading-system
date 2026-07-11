@@ -206,15 +206,62 @@ class FundingRateArbStrategy(BaseStrategy):
         return []
 
     async def on_position_update(self, event: PositionUpdateEvent) -> None:
+        """A zero-size position on one leg exchange means that leg is gone.
+        Pop the arb only when the SIBLING leg is flat too — popping on the
+        first zero (old behavior) orphaned the sibling as naked exposure when
+        one leg was closed manually, and raced the exit-retry loop during
+        managed exits. A confirmed-naked sibling is closed immediately."""
         pos = event.position
-        if pos.size == 0 and pos.symbol in self._open_arbs:
-            arb = self._open_arbs.pop(pos.symbol)
+        arb = self._open_arbs.get(pos.symbol)
+        if arb is None or pos.size != 0:
+            return
+        if pos.exchange.value not in (arb["long_ex"], arb["short_ex"]):
+            return
+
+        zero_is_long = pos.exchange.value == arb["long_ex"]
+        sibling_ex = Exchange(arb["short_ex"] if zero_is_long else arb["long_ex"])
+        sibling_flat = await self._exchange_flat(sibling_ex, pos.symbol)
+
+        if sibling_flat:
+            self._open_arbs.pop(pos.symbol, None)
             self._exit_count += 1
             self._save_state_soon()
             self.logger.info(
                 f"Arb closed for {pos.symbol} "
                 f"(was: long={arb['long_ex']}, short={arb['short_ex']})"
             )
+            return
+
+        if sibling_flat is None:
+            return  # sibling state unknown — leave the arb for the poll loop
+
+        # Managed exits close both legs within one poll pass; the first leg's
+        # zero event lands while the second order is in flight. Let the exit
+        # loop own it — only an out-of-band close (manual / liquidation) needs
+        # the emergency sibling close below.
+        if time.time() - arb.get("exiting_ts", 0.0) < 300:
+            return
+
+        self.logger.error(
+            f"One leg of {pos.symbol} arb closed externally "
+            f"[{pos.exchange.value}] — sibling on {sibling_ex.value} is NAKED, closing it"
+        )
+        # The sibling opened as SHORT (sell) if the zeroed leg was the long —
+        # hand _reverse_naked_leg the opening side and it places the closing order
+        sibling_open_side = OrderSide.SELL if zero_is_long else OrderSide.BUY
+        sibling_sig = Signal(
+            exchange=sibling_ex, symbol=pos.symbol, side=sibling_open_side,
+            order_type=OrderType.MARKET, quantity=Decimal(str(arb["size"])),
+            strategy_id=self.strategy_id,
+        )
+        fake_order = Order(
+            exchange=sibling_ex, symbol=pos.symbol, side=sibling_open_side,
+            order_type=OrderType.MARKET, quantity=Decimal(str(arb["size"])),
+        )
+        await self._reverse_naked_leg(pos.symbol, sibling_sig, fake_order)
+        self._open_arbs.pop(pos.symbol, None)
+        self._exit_count += 1
+        self._save_state_soon()
 
     # ── Background funding rate poll ──────────────────────────────────────────
 
@@ -612,26 +659,35 @@ class FundingRateArbStrategy(BaseStrategy):
             except Exception:
                 pass
 
-    async def _leg_already_flat(self, sig: Signal) -> Optional[bool]:
-        """True when the exchange reports no position for this leg's symbol —
-        its reduce_only retry would be rejected (Binance -2022 / OKX no-position),
-        which without this check wedges the exit loop forever: the closed leg
-        keeps 'failing', so the arb is never popped and blocks the symbol.
-        None = position fetch failed (unknown) — attempt the leg anyway."""
+    async def _exchange_flat(self, exchange: Exchange, symbol: str) -> Optional[bool]:
+        """True when the exchange reports no open position for symbol.
+        None = position fetch failed (unknown) — callers must NOT read that as flat."""
         eng = self.engine
-        conn = getattr(eng, "connectors", {}).get(sig.exchange) if eng else None
+        conn = getattr(eng, "connectors", {}).get(exchange) if eng else None
         conn_call = getattr(eng, "_conn_call", None)
         if conn is None or conn_call is None:
             return None
-        positions = await conn_call("get_positions", sig.exchange, conn.get_positions)
+        positions = await conn_call("get_positions", exchange, conn.get_positions)
         if positions is None:
             return None
-        return not any(p.symbol == sig.symbol and abs(p.size) > 0 for p in positions)
+        return not any(p.symbol == symbol and abs(p.size) > 0 for p in positions)
+
+    async def _leg_already_flat(self, sig: Signal) -> Optional[bool]:
+        """True when this leg's position is already gone — its reduce_only retry
+        would be rejected (Binance -2022 / OKX no-position), which without this
+        check wedges the exit loop forever: the closed leg keeps 'failing', so
+        the arb is never popped and blocks the symbol."""
+        return await self._exchange_flat(sig.exchange, sig.symbol)
 
     async def _execute_exit_legs(self, symbol: str, sigs: list[Signal]) -> None:
         """Execute both reduce_only exit legs; pop the arb only if both placed so a
         failed exit is retried next poll. Legs whose position is already flat
         (closed by a previous partial exit) are skipped as done."""
+        arb = self._open_arbs.get(symbol)
+        if arb is not None:
+            # Marks this exit as strategy-managed: on_position_update must not
+            # treat the first leg's zero event as an out-of-band close
+            arb["exiting_ts"] = time.time()
         ok = True
         for sig in sigs:
             if await self._leg_already_flat(sig):

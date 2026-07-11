@@ -546,3 +546,95 @@ def test_state_restore_absent_is_noop():
     s = asyncio.run(run())
     assert s._open_arbs == {} and s._entry_fail_ts == {}
     assert s._state_loaded is True
+
+
+# ── One-leg-flat position events (sibling orphan protection) ─────────────────
+
+from core.types import Position, PositionSide, PositionUpdateEvent
+
+
+def _zero_pos_event(ex, sym=SYM):
+    z = Decimal("0")
+    return PositionUpdateEvent(Position(
+        exchange=ex, symbol=sym, side=PositionSide.LONG, size=z,
+        entry_price=z, mark_price=z, leverage=1, unrealized_pnl=z, margin=z))
+
+
+def _arb_strategy(eng, flat_exchanges):
+    _flat_aware_engine(eng, flat_exchanges)
+    s = _fund(eng, maker_legs=False, reverse_retry_delay_s=0.01)
+    s._open_arbs[SYM] = _meta()
+    return s
+
+
+def test_pos_event_both_flat_pops_arb():
+    async def run():
+        eng = _FundEngine()
+        s = _arb_strategy(eng, flat_exchanges={Exchange.OKX, Exchange.BINANCE})
+        await s.on_position_update(_zero_pos_event(Exchange.OKX))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert SYM not in s._open_arbs and s._exit_count == 1
+    assert eng.placed == []
+
+
+def test_pos_event_naked_sibling_gets_closed():
+    """Long leg closed externally, short leg still open → close it, pop arb."""
+    async def run():
+        eng = _FundEngine()
+        # OKX (long per _meta) flat, BINANCE (short) still open
+        s = _arb_strategy(eng, flat_exchanges={Exchange.OKX})
+        await s.on_position_update(_zero_pos_event(Exchange.OKX))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert SYM not in s._open_arbs
+    assert len(eng.placed) == 1
+    close = eng.placed[0]
+    assert close["exchange"] == Exchange.BINANCE
+    assert close["side"] == OrderSide.BUY          # closes the short
+    assert close["reduce_only"] is True
+
+
+def test_pos_event_during_managed_exit_is_noop():
+    """The exit loop owns leg zero events fired while it is closing both legs."""
+    async def run():
+        eng = _FundEngine()
+        s = _arb_strategy(eng, flat_exchanges={Exchange.OKX})
+        s._open_arbs[SYM]["exiting_ts"] = time.time()   # managed exit in flight
+        await s.on_position_update(_zero_pos_event(Exchange.OKX))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert SYM in s._open_arbs                    # retry loop still owns it
+    assert eng.placed == []
+
+
+def test_pos_event_sibling_unknown_keeps_arb():
+    async def run():
+        eng = _FundEngine()
+        eng.connectors = {Exchange.OKX: _PosConn([]), Exchange.BINANCE: _PosConn([])}
+
+        async def _conn_call(op, ex, coro_factory):
+            return None                            # fetch failed
+        eng._conn_call = _conn_call
+        s = _fund(eng, maker_legs=False)
+        s._open_arbs[SYM] = _meta()
+        await s.on_position_update(_zero_pos_event(Exchange.OKX))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert SYM in s._open_arbs and eng.placed == []
+
+
+def test_pos_event_other_exchange_ignored():
+    """Zero-pos events from exchanges outside the arb's legs must not touch it."""
+    async def run():
+        eng = _FundEngine()
+        s = _arb_strategy(eng, flat_exchanges=set())
+        await s.on_position_update(_zero_pos_event(Exchange.BINANCE_SPOT))
+        return eng, s
+
+    eng, s = asyncio.run(run())
+    assert SYM in s._open_arbs and eng.placed == []
